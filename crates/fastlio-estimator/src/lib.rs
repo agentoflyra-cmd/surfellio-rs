@@ -29,7 +29,7 @@
 //! - the observation was produced at the same linearization point as the
 //!   `NavState` used to build the Jacobian.
 
-use fastlio_map::surfel::{SurfelLineObservation, SurfelObservation, SurfelPlaneObservation};
+use fastlio_map::surfel::{SurfelLineObservation, SurfelPlaneObservation};
 use fastlio_types::{LidarImuExtrinsic, Mat3, NavState, PointXYZI, Vec3};
 use nalgebra::{SMatrix, SVector};
 pub mod iekf;
@@ -79,7 +79,6 @@ pub fn linearize_point_to_line_observation(
 pub fn linearized_point_to_surfel_observation(
     state: &NavState,
     point_i: &PointXYZI,
-    _obs: &SurfelObservation,
 ) -> SMatrix<f64, 3, 23> {
     let r_wi = state.orientation.to_rotation_matrix();
     let r_wi = r_wi.matrix();

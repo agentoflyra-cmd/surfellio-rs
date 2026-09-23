@@ -110,8 +110,17 @@ pub struct SurfelConfig {
     pub max_plane_distance: f32,
     pub max_planarity_ratio: f32,
     pub min_plane_spread_eigenvalue: f32,
-    #[serde(default = "default_covariance_eigenvalue_floor")]
-    pub covariance_eigenvalue_floor: f32,
+    /// Minimum eigenvalue used by map-side association support and ranking,
+    /// expressed in square meters. It does not contribute to IEKF whitening.
+    #[serde(
+        default = "default_association_covariance_eigenvalue_floor",
+        alias = "covariance_eigenvalue_floor"
+    )]
+    pub association_covariance_eigenvalue_floor: f32,
+    /// Minimum eigenvalue used only when merging new points into mature
+    /// surfels, expressed in square meters.
+    #[serde(default = "default_insertion_covariance_eigenvalue_floor")]
+    pub insertion_covariance_eigenvalue_floor: f32,
     pub min_linearity: f32,
     pub min_line_spread_eigenvalue: f32,
     pub min_scattering: f32,
@@ -126,7 +135,9 @@ impl Default for SurfelConfig {
             max_plane_distance: 0.30,
             max_planarity_ratio: 0.10,
             min_plane_spread_eigenvalue: 0.025,
-            covariance_eigenvalue_floor: default_covariance_eigenvalue_floor(),
+            association_covariance_eigenvalue_floor:
+                default_association_covariance_eigenvalue_floor(),
+            insertion_covariance_eigenvalue_floor: default_insertion_covariance_eigenvalue_floor(),
             min_linearity: 0.70,
             min_line_spread_eigenvalue: 0.0025,
             min_scattering: 0.60,
@@ -137,7 +148,11 @@ impl Default for SurfelConfig {
     }
 }
 
-fn default_covariance_eigenvalue_floor() -> f32 {
+fn default_association_covariance_eigenvalue_floor() -> f32 {
+    0.03_f32.powi(2)
+}
+
+fn default_insertion_covariance_eigenvalue_floor() -> f32 {
     1e-6
 }
 

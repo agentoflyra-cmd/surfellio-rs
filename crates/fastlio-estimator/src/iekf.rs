@@ -233,6 +233,7 @@ impl IekfState {
                 map,
                 extrinsic,
                 config,
+                &p_prior,
                 &mut observations,
             )?;
             let observations_len = observations.len();

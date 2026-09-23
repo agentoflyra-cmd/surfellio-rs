@@ -32,9 +32,6 @@ pub struct IekfConfig {
     pub max_iterations: usize,
     pub min_delta_norm: f64,
     pub damping: f64,
-    /// Geometry-independent association covariance in the LiDAR frame `L`,
-    /// expressed in square meters.
-    pub association_point_covariance_l: Mat3<f64>,
     /// Raw LiDAR point measurement covariance in the LiDAR frame `L`, used
     /// only to whiten the IEKF update and expressed in square meters.
     pub measurement_point_covariance_l: Mat3<f64>,
@@ -47,7 +44,6 @@ impl Default for IekfConfig {
             max_iterations: 10,
             min_delta_norm: 1.0e-6,
             damping: 1.0e-6,
-            association_point_covariance_l: Mat3::identity() * 0.03_f64.powi(2),
             measurement_point_covariance_l: Mat3::identity() * 0.03_f64.powi(2),
             min_observations: 0,
         }
@@ -60,11 +56,10 @@ pub(crate) fn build_surfel_observation(
     map: &SurfelMap,
     extrinsic: &LidarImuExtrinsic,
     config: &IekfConfig,
+    p_prior: &SMatrix<f64, 23, 23>,
     out: &mut Vec<LinearizedObservation>,
 ) -> Result<(), IekfUpdateError> {
     out.clear();
-    let association_point_covariance_w =
-        point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
     let measurement_point_covariance_w =
         point_covariance_w(state, extrinsic, &config.measurement_point_covariance_l);
     for point in points {
@@ -83,14 +78,15 @@ pub(crate) fn build_surfel_observation(
             intensity: point.intensity,
         };
 
+        let jacobian = linearized_point_to_surfel_observation(state, &point_i);
+        let association_covariance = jacobian * p_prior * jacobian.transpose();
         let observation = map
-            .query_surfel(&point_w, association_point_covariance_w)
+            .query_surfel(&point_w, &association_covariance)
             .map_err(|e| IekfUpdateError::MapQueryFailed {
                 context: e.to_string(),
             })?;
         if let Some(obs) = observation {
             let measurement_covariance = obs.covariance_w + measurement_point_covariance_w;
-            let jacobian = linearized_point_to_surfel_observation(state, &point_i, &obs);
             let residual = point_w_vec - obs.mean_w;
             let (whiten_residual, whiten_jacobian) =
                 whiten_surfel_measurement(&measurement_covariance, &residual, &jacobian)?;
@@ -322,6 +318,8 @@ mod tests {
         };
         let surfel_config = SurfelConfig {
             growing_radius: 3.5,
+            // This test isolates measurement whitening from association.
+            max_mahalanobis_distance: 100.0,
             ..SurfelConfig::default()
         };
         let mut map = SurfelMap::new(map_config, surfel_config);
@@ -356,16 +354,16 @@ mod tests {
         };
         let extrinsic = LidarImuExtrinsic::new(UnitQuaternion::identity(), Vec3::zeros());
         let points = [PointXYZI {
-            x: 0.0,
+            x: 0.1,
             y: 0.0,
-            z: 0.1,
+            z: 0.0,
             intensity: 0.0,
         }];
         let base = IekfConfig {
-            association_point_covariance_l: Mat3::identity() * 0.15_f64.powi(2),
             measurement_point_covariance_l: Mat3::identity() * 0.03_f64.powi(2),
             ..IekfConfig::default()
         };
+        let p_prior = SMatrix::<f64, 23, 23>::identity() * 1e-6;
 
         let mut narrow_measurement = Vec::new();
         build_surfel_observation(
@@ -374,6 +372,7 @@ mod tests {
             &map,
             &extrinsic,
             &base,
+            &p_prior,
             &mut narrow_measurement,
         )
         .unwrap();
@@ -389,6 +388,7 @@ mod tests {
             &map,
             &extrinsic,
             &wide_measurement_config,
+            &p_prior,
             &mut wide_measurement,
         )
         .unwrap();

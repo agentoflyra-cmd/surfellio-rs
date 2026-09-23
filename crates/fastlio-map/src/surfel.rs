@@ -292,7 +292,7 @@ impl SurfelMap {
     pub fn query_surfel(
         &self,
         point: &PointXYZI,
-        point_w_covariance: Mat3<f64>,
+        association_covariance: &Mat3<f64>,
     ) -> Result<Option<SurfelObservation>> {
         let radius = self.surfel_map_config.search_radius;
         if !point.is_valid() {
@@ -327,12 +327,15 @@ impl SurfelMap {
             if surfel.is_growing(self.surfel_config.min_mature_surfel_count) || surfel.count < 2 {
                 continue;
             }
-            let Some((_, _, score)) = surfel.surfel_score(point, &point_w_covariance) else {
+            let Some(gate_score) = surfel.gate(point, &self.surfel_config, association_covariance)
+            else {
                 continue;
             };
-            if score > self.surfel_config.max_mahalanobis_distance.powi(2) as f64 {
+            if gate_score > self.surfel_config.max_mahalanobis_distance.powi(2) as f64 {
                 continue;
             }
+
+            let score = surfel.mahalanobis_squared(point, &self.surfel_config);
 
             if best.is_none_or(|(_, best_score)| score < best_score) {
                 second_best = best;
@@ -387,7 +390,7 @@ impl SurfelMap {
                     if surfel.is_growing(self.surfel_config.min_mature_surfel_count) {
                         surfel.within_growing_radius(&point, &self.surfel_config)
                     } else {
-                        surfel.within_support(&point, &self.surfel_config)
+                        surfel.within_insertion_support(&point, &self.surfel_config)
                     }
                 });
             let mut best_mature: Option<(SurfelID, f64)> = None;
@@ -402,7 +405,7 @@ impl SurfelMap {
                     seen.insert(id);
                 }
                 if s.count >= self.surfel_config.min_mature_surfel_count {
-                    let score = s.plane_distance(&point) as f64;
+                    let score = s.insertion_mahalanobis_squared(&point, &self.surfel_config);
                     if best_mature.is_none_or(|(_, best)| score < best) {
                         best_mature = Some((id, score));
                     }

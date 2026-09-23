@@ -121,7 +121,7 @@ impl Surfel {
 
     pub fn support_aabb_extent(&self, config: &SurfelConfig) -> Vec3<f64> {
         let support_sigma = config.max_mahalanobis_distance as f64;
-        let covariance_floor = config.covariance_eigenvalue_floor as f64;
+        let covariance_floor = config.association_covariance_eigenvalue_floor as f64;
         let lambda_0 = support_sigma * support_sigma * self.eigenvalues[0].max(covariance_floor);
         let lambda_1 = support_sigma * support_sigma * self.eigenvalues[1].max(covariance_floor);
         let lambda_2 = support_sigma * support_sigma * self.eigenvalues[2].max(covariance_floor);
@@ -137,13 +137,51 @@ impl Surfel {
         )
     }
 
+    pub fn gate(
+        &self,
+        point: &PointXYZI,
+        config: &SurfelConfig,
+        association_covariance: &Mat3<f64>,
+    ) -> Option<f64> {
+        let covariance_floor = config.association_covariance_eigenvalue_floor as f64;
+        let delta = point.to_vec3_f64() - self.mean_w;
+        let d_local = self.eigenvectors.transpose() * delta;
+
+        let l0 = self.eigenvalues[0].max(covariance_floor);
+        let l1 = self.eigenvalues[1].max(covariance_floor);
+        let l2 = self.eigenvalues[2].max(covariance_floor);
+
+        let surfel_cov_local = Mat3::from_diagonal(&Vec3::new(l0, l1, l2));
+
+        let pred_cov_local =
+            self.eigenvectors.transpose() * association_covariance * self.eigenvectors;
+
+        let gate_cov = surfel_cov_local + pred_cov_local;
+        let x = gate_cov.cholesky()?.solve(&d_local);
+
+        Some(d_local.dot(&x))
+    }
+
     pub fn mahalanobis_squared(&self, point: &PointXYZI, config: &SurfelConfig) -> f64 {
+        self.mahalanobis_squared_with_floor(
+            point,
+            config.association_covariance_eigenvalue_floor as f64,
+        )
+    }
+
+    pub fn insertion_mahalanobis_squared(&self, point: &PointXYZI, config: &SurfelConfig) -> f64 {
+        self.mahalanobis_squared_with_floor(
+            point,
+            config.insertion_covariance_eigenvalue_floor as f64,
+        )
+    }
+
+    fn mahalanobis_squared_with_floor(&self, point: &PointXYZI, covariance_floor: f64) -> f64 {
         let delta = point.to_vec3_f64() - self.mean_w;
         let d0 = self.eigenvectors.column(0).dot(&delta);
         let d1 = self.eigenvectors.column(1).dot(&delta);
         let d2 = self.eigenvectors.column(2).dot(&delta);
 
-        let covariance_floor = config.covariance_eigenvalue_floor as f64;
         let l0 = self.eigenvalues[0].max(covariance_floor);
         let l1 = self.eigenvalues[1].max(covariance_floor);
         let l2 = self.eigenvalues[2].max(covariance_floor);
@@ -156,18 +194,9 @@ impl Surfel {
         self.mahalanobis_squared(point, config) as f32 <= support_sigma * support_sigma
     }
 
-    pub fn surfel_score(
-        &self,
-        point_w: &PointXYZI,
-        point_w_variance: &Mat3<f64>,
-    ) -> Option<(Mat3<f64>, Mat3<f64>, f64)> {
-        let delta = point_w.to_vec3_f64() - self.mean_w;
-        let covariance = self.m2 / (self.count - 1) as f64 + point_w_variance;
-        let chol = covariance.cholesky()?;
-        let l = chol.l();
-        let y = l.solve_lower_triangular(&delta)?;
-        let score = y.dot(&y);
-        Some((covariance, l, score))
+    pub fn within_insertion_support(&self, point: &PointXYZI, config: &SurfelConfig) -> bool {
+        let support_sigma = config.max_mahalanobis_distance;
+        self.insertion_mahalanobis_squared(point, config) as f32 <= support_sigma * support_sigma
     }
 
     pub fn within_tangent_support(&self, point: &PointXYZI, config: &SurfelConfig) -> bool {
@@ -175,7 +204,7 @@ impl Surfel {
         let d1 = self.eigenvectors.column(1).dot(&delta);
         let d2 = self.eigenvectors.column(2).dot(&delta);
 
-        let covariance_floor = config.covariance_eigenvalue_floor as f64;
+        let covariance_floor = config.association_covariance_eigenvalue_floor as f64;
         let l1 = self.eigenvalues[1].max(covariance_floor);
         let l2 = self.eigenvalues[2].max(covariance_floor);
         let support_sigma = config.max_mahalanobis_distance as f64;

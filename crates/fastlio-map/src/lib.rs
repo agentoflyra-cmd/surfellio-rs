@@ -485,10 +485,6 @@ mod surfel_test {
         }
     }
 
-    fn association_covariance(stddev: f64) -> Mat3<f64> {
-        Mat3::identity() * stddev.powi(2)
-    }
-
     fn map_config() -> SurfelMapConfig {
         SurfelMapConfig {
             voxel_size: 1.0,
@@ -793,7 +789,7 @@ mod surfel_test {
         assert_eq!(only_surfel(&map).count, 4);
         assert_none(&map, &pt(0.1, 0.1, 0.0));
         assert!(
-            map.query_surfel(&pt(0.1, 0.1, 0.0), association_covariance(0.01),)
+            map.query_surfel(&pt(0.1, 0.1, 0.0), &Mat3::zeros())
                 .expect("query must not error")
                 .is_none()
         );
@@ -806,7 +802,7 @@ mod surfel_test {
             .unwrap();
 
         let observation = map
-            .query_surfel(&pt(0.0, 0.0, 0.0), association_covariance(0.01))
+            .query_surfel(&pt(0.0, 0.0, 0.0), &Mat3::zeros())
             .expect("query must not error")
             .expect("mature surfel expected");
         assert!(
@@ -820,7 +816,7 @@ mod surfel_test {
         assert!(observation.second_best_score.is_none());
 
         let rejected = map
-            .query_surfel(&pt(0.0, 0.0, 2.5), association_covariance(0.01))
+            .query_surfel(&pt(0.0, 0.0, 2.5), &Mat3::zeros())
             .expect("query must not error");
         assert!(rejected.is_none());
     }
@@ -1024,22 +1020,31 @@ mod surfel_test {
         );
         assert!(!s.within_support(&pt(0.0, 2.1, 0.0), &config));
 
-        // Same tangent position, but tiny deviation along the degenerate axis:
-        // rejected because the plane has ~zero extent along its normal.
-        assert!(!s.within_support(&pt(0.01, 0.9, 1.5), &config));
-        assert!(!s.within_support(&pt(-0.01, 0.9, 1.5), &config));
+        // The association covariance floor grants capture range only along
+        // the degenerate normal; tangent extents still come from the surfel.
+        assert!(s.within_support(&pt(0.01, 0.9, 1.5), &config));
+        assert!(s.within_support(&pt(-0.01, 0.9, 1.5), &config));
 
         // Pure normal deviation: tolerance is bounded by the covariance floor.
-        assert!(s.within_support(&pt(0.001, 0.0, 0.0), &config));
-        assert!(!s.within_support(&pt(0.003, 0.0, 0.0), &config));
+        assert!(s.within_support(&pt(0.059, 0.0, 0.0), &config));
+        assert!(!s.within_support(&pt(0.061, 0.0, 0.0), &config));
+    }
+
+    #[test]
+    fn insertion_support_remains_stricter_than_association_support() {
+        let config = surfel_config(|_| {});
+        let plane = axis_plane_surfel(0.0);
+
+        assert!(plane.within_support(&pt(0.01, 0.0, 0.0), &config));
+        assert!(!plane.within_insertion_support(&pt(0.01, 0.0, 0.0), &config));
     }
 
     #[test]
     fn within_support_covariance_regularization_floor_boundary() {
-        let config = surfel_config(|_| {});
+        let config = surfel_config(|c| c.association_covariance_eigenvalue_floor = 1e-6);
 
         // Probe just past the floor-limited tolerance, at |normal offset|^2 = 6.25e-6.
-        // With the default covariance floor active the Mahalanobis term is 6.25 > sigma^2 (4),
+        // With the configured covariance floor active the Mahalanobis term is 6.25 > sigma^2 (4),
         // so the point is rejected; the boundary is exactly at offsets below 1e-3*sigma.
         let probe = pt(2.5e-3, 0.0, 0.0);
 
