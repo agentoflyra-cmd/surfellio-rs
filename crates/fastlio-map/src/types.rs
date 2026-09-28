@@ -2,6 +2,8 @@ use anyhow::Result;
 use fastlio_types::{Mat3, PointXYZI, SurfelConfig, Vec3};
 use smallvec::SmallVec;
 
+const SUPPORT_AABB_EIGENVALUE_FLOOR: f64 = 0.25;
+
 #[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
 pub struct VoxelKey {
     pub x: i32,
@@ -119,9 +121,11 @@ impl Surfel {
         self.plane_distance(point) <= max_distance
     }
 
+    /// Returns the index extent using a fixed association eigenvalue floor.
+    /// The gate threshold still determines the support radius.
     pub fn support_aabb_extent(&self, config: &SurfelConfig) -> Vec3<f64> {
         let support_sigma = config.max_mahalanobis_distance as f64;
-        let covariance_floor = config.association_covariance_eigenvalue_floor as f64;
+        let covariance_floor = SUPPORT_AABB_EIGENVALUE_FLOOR;
         let lambda_0 = support_sigma * support_sigma * self.eigenvalues[0].max(covariance_floor);
         let lambda_1 = support_sigma * support_sigma * self.eigenvalues[1].max(covariance_floor);
         let lambda_2 = support_sigma * support_sigma * self.eigenvalues[2].max(covariance_floor);

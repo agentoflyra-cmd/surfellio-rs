@@ -319,11 +319,11 @@ impl SurfelMap {
 
         let mut best: Option<(SurfelID, f64)> = None;
         let mut second_best: Option<(SurfelID, f64)> = None;
-        let mut seen = HashSet::new();
+        // let mut seen = HashSet::new();
         for (id, surfel) in candidate_ids {
-            if !seen.insert(id) {
-                continue;
-            }
+            // if !seen.insert(id) {
+            // continue;
+            // }
             if surfel.is_growing(self.surfel_config.min_mature_surfel_count) || surfel.count < 2 {
                 continue;
             }
@@ -396,14 +396,14 @@ impl SurfelMap {
             let mut best_mature: Option<(SurfelID, f64)> = None;
             let mut best_growing: Option<(SurfelID, f64)> = None;
 
-            let mut seen = HashSet::new();
+            // let mut seen = HashSet::new();
 
             for (id, s) in candidate_ids {
-                if seen.contains(&id) {
-                    continue;
-                } else {
-                    seen.insert(id);
-                }
+                // if seen.contains(&id) {
+                // continue;
+                // } else {
+                // seen.insert(id);
+                // }
                 if s.count >= self.surfel_config.min_mature_surfel_count {
                     let score = s.insertion_mahalanobis_squared(&point, &self.surfel_config);
                     if best_mature.is_none_or(|(_, best)| score < best) {

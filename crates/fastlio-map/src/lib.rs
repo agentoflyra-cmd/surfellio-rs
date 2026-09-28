@@ -1121,7 +1121,9 @@ mod surfel_test {
     #[allow(clippy::field_reassign_with_default)]
     fn support_aabb_extent_covers_three_dimensional_support() {
         let config = surfel_config(|_| {});
-        let sigma = config.max_mahalanobis_distance;
+        let sigma = config.max_mahalanobis_distance as f64;
+        let mut higher_floor_config = config.clone();
+        higher_floor_config.association_covariance_eigenvalue_floor = 0.25;
         let rot90 = Mat3::new(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
 
         // (eigenvectors, eigenvalues) with/without a real normal eigenvalue,
@@ -1144,8 +1146,7 @@ mod surfel_test {
             for i in 0..3 {
                 // Boundary point along eigen-direction i: within_support is
                 // inclusive at radius sqrt(sigma^2 * ev[i]).
-                let p =
-                    s.mean_w + s.eigenvectors.column(i) * (sigma as f64 * eigenvalues[i].sqrt());
+                let p = s.mean_w + s.eigenvectors.column(i) * (sigma * eigenvalues[i].sqrt());
                 let point = PointXYZI {
                     x: p.x as f32,
                     y: p.y as f32,
@@ -1166,6 +1167,12 @@ mod surfel_test {
                     !(eigenvectors == Mat3::identity())
                 );
             }
+
+            assert_eq!(
+                extent,
+                s.support_aabb_extent(&higher_floor_config),
+                "association eigenvalue floor must not change the surfel index extent"
+            );
         }
     }
 
