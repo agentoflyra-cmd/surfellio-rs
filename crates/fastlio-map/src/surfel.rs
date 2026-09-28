@@ -327,15 +327,14 @@ impl SurfelMap {
             if surfel.is_growing(self.surfel_config.min_mature_surfel_count) || surfel.count < 2 {
                 continue;
             }
-            let Some(gate_score) = surfel.gate(point, &self.surfel_config, association_covariance)
+            let Some(score) =
+                surfel.association_score(point, &self.surfel_config, association_covariance)
             else {
                 continue;
             };
-            if gate_score > self.surfel_config.max_mahalanobis_distance.powi(2) as f64 {
+            if score > self.surfel_config.max_mahalanobis_distance.powi(2) as f64 {
                 continue;
             }
-
-            let score = surfel.mahalanobis_squared(point, &self.surfel_config);
 
             if best.is_none_or(|(_, best_score)| score < best_score) {
                 second_best = best;

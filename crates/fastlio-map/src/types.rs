@@ -121,10 +121,10 @@ impl Surfel {
 
     pub fn support_aabb_extent(&self, config: &SurfelConfig) -> Vec3<f64> {
         let support_sigma = config.max_mahalanobis_distance as f64;
-        let covariance_floor = config.association_covariance_eigenvalue_floor as f64;
-        let lambda_0 = support_sigma * support_sigma * self.eigenvalues[0].max(covariance_floor);
-        let lambda_1 = support_sigma * support_sigma * self.eigenvalues[1].max(covariance_floor);
-        let lambda_2 = support_sigma * support_sigma * self.eigenvalues[2].max(covariance_floor);
+        let association_eigenvalues = self.association_covariance_eigenvalues(config);
+        let lambda_0 = support_sigma * support_sigma * association_eigenvalues[0];
+        let lambda_1 = support_sigma * support_sigma * association_eigenvalues[1];
+        let lambda_2 = support_sigma * support_sigma * association_eigenvalues[2];
 
         let t0 = self.eigenvectors.column(0);
         let t1 = self.eigenvectors.column(1);
@@ -137,21 +137,34 @@ impl Surfel {
         )
     }
 
-    pub fn gate(
+    pub(crate) fn association_covariance_eigenvalues(&self, config: &SurfelConfig) -> Vec3<f64> {
+        let covariance_floor = config.association_covariance_eigenvalue_floor as f64;
+        let lambda_max = self.eigenvalues[2].max(0.0);
+        let spectral_scale = lambda_max.max(covariance_floor).max(f64::EPSILON);
+        let shape_variance = (config.association_spectral_variance as f64).max(0.0);
+        let effective_eigenvalue = |lambda: f64| {
+            let shape_weight =
+                ((lambda_max - lambda.max(0.0)).max(0.0) / spectral_scale).clamp(0.0, 1.0);
+            lambda.max(covariance_floor) + shape_variance * shape_weight
+        };
+
+        Vec3::new(
+            effective_eigenvalue(self.eigenvalues[0]),
+            effective_eigenvalue(self.eigenvalues[1]),
+            effective_eigenvalue(self.eigenvalues[2]),
+        )
+    }
+
+    pub(crate) fn association_score(
         &self,
         point: &PointXYZI,
         config: &SurfelConfig,
         association_covariance: &Mat3<f64>,
     ) -> Option<f64> {
-        let covariance_floor = config.association_covariance_eigenvalue_floor as f64;
         let delta = point.to_vec3_f64() - self.mean_w;
         let d_local = self.eigenvectors.transpose() * delta;
-
-        let l0 = self.eigenvalues[0].max(covariance_floor);
-        let l1 = self.eigenvalues[1].max(covariance_floor);
-        let l2 = self.eigenvalues[2].max(covariance_floor);
-
-        let surfel_cov_local = Mat3::from_diagonal(&Vec3::new(l0, l1, l2));
+        let surfel_cov_local =
+            Mat3::from_diagonal(&self.association_covariance_eigenvalues(config));
 
         let pred_cov_local =
             self.eigenvectors.transpose() * association_covariance * self.eigenvectors;

@@ -117,6 +117,10 @@ pub struct SurfelConfig {
         alias = "covariance_eigenvalue_floor"
     )]
     pub association_covariance_eigenvalue_floor: f32,
+    /// Additional association variance distributed continuously across
+    /// constrained surfel eigen-directions, expressed in square meters.
+    #[serde(default = "default_association_spectral_variance")]
+    pub association_spectral_variance: f32,
     /// Minimum eigenvalue used only when merging new points into mature
     /// surfels, expressed in square meters.
     #[serde(default = "default_insertion_covariance_eigenvalue_floor")]
@@ -137,6 +141,7 @@ impl Default for SurfelConfig {
             min_plane_spread_eigenvalue: 0.025,
             association_covariance_eigenvalue_floor:
                 default_association_covariance_eigenvalue_floor(),
+            association_spectral_variance: default_association_spectral_variance(),
             insertion_covariance_eigenvalue_floor: default_insertion_covariance_eigenvalue_floor(),
             min_linearity: 0.70,
             min_line_spread_eigenvalue: 0.0025,
@@ -150,6 +155,10 @@ impl Default for SurfelConfig {
 
 fn default_association_covariance_eigenvalue_floor() -> f32 {
     0.03_f32.powi(2)
+}
+
+fn default_association_spectral_variance() -> f32 {
+    0.0
 }
 
 fn default_insertion_covariance_eigenvalue_floor() -> f32 {
