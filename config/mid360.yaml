@@ -45,3 +45,8 @@ surfel_config:
     # pcd_save_en: true
     # interval: -1                 # how many LiDAR frames saved in each pcd file; 
                                  # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too much frames.
+
+# Iterated-EKF solver: FAST-LIO style 1e-3 convergence threshold.
+iekf:
+    max_iterations: 10
+    min_delta_norm: 1.0e-3

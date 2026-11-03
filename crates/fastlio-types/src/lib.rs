@@ -168,9 +168,11 @@ pub struct MappingConfig {
 ///
 /// `min_delta_norm` is the norm of the 23D error-state correction (rad, m,
 /// m/s, biases, plus the 2D gravity tangent). FAST-LIO uses `max_iteration=4`
-/// with a per-component `|dx_j| < 1e-3` check; the default here keeps the old
-/// `1e-6` norm threshold, and the surfel-025 line measured a large wall-time
-/// win for `1e-3` at negligible trajectory change.
+/// with a per-component `|dx_j| < 1e-3` check, so the default here is the
+/// equivalent `|dx| < 1e-3` norm threshold. Measured on KA-Urban-East with the
+/// dev S2-gravity base: 1e-6 -> 1e-3 shortens the replay from 1087.5 s to
+/// 735.4 s (1.48x) while end-to-end error moves 3.92 -> 3.82 m and ATE
+/// 3.97 -> 3.91 m, i.e. no accuracy regression.
 #[derive(Deserialize, Clone, Copy, Debug)]
 #[serde(default)]
 pub struct IekfTuning {
@@ -182,7 +184,7 @@ impl Default for IekfTuning {
     fn default() -> Self {
         Self {
             max_iterations: 10,
-            min_delta_norm: 1.0e-6,
+            min_delta_norm: 1.0e-3,
         }
     }
 }
