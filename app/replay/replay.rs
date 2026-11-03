@@ -493,6 +493,10 @@ fn main() -> Result<()> {
         write_surfel_map(path, &pipeline.map)?;
     }
     print_summary(&stats, &replay_config);
+    println!(
+        "  association ratio: last {:.3}, mean {:.3}",
+        pipeline.last_observation_ratio, pipeline.mean_observation_ratio
+    );
     Ok(())
 }
 

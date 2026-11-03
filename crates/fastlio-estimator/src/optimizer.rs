@@ -63,8 +63,6 @@ pub(crate) fn build_surfel_observation(
     out: &mut Vec<LinearizedObservation>,
 ) -> Result<(), IekfUpdateError> {
     out.clear();
-    let association_point_covariance_w =
-        point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
     let measurement_point_covariance_w =
         point_covariance_w(state, extrinsic, &config.measurement_point_covariance_l);
     for point in points {
@@ -84,12 +82,14 @@ pub(crate) fn build_surfel_observation(
         };
 
         let observation = map
-            .query_surfel(&point_w, association_point_covariance_w)
+            .query_surfel(&point_w, measurement_point_covariance_w)
             .map_err(|e| IekfUpdateError::MapQueryFailed {
                 context: e.to_string(),
             })?;
         if let Some(obs) = observation {
-            let measurement_covariance = obs.covariance_w + measurement_point_covariance_w;
+            let measurement_covariance = obs.covariance_w
+                + obs.plane_covariance_w
+                + measurement_point_covariance_w;
             let jacobian = linearized_point_to_surfel_observation(state, &point_i, &obs);
             let residual = point_w_vec - obs.mean_w;
             let (whiten_residual, whiten_jacobian) =

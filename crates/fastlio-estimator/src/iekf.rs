@@ -10,6 +10,16 @@ use nalgebra::{SMatrix, SVector, UnitQuaternion};
 
 use crate::optimizer::{IekfConfig, IekfUpdateError};
 
+/// Per-frame statistics from one iterated update, used by the pipeline to
+/// adapt the surfel association gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IekfUpdateSummary {
+    pub points: usize,
+    pub observations: usize,
+    pub iterations: usize,
+    pub converged: bool,
+}
+
 pub(crate) fn gravity_box_plus(
     gravity: &Vec3<f64>,
     gravity_basis: &Mat32,
@@ -214,7 +224,7 @@ impl IekfState {
         extrinsic: &LidarImuExtrinsic,
         map: &SurfelMap,
         config: &IekfConfig,
-    ) -> Result<(), IekfUpdateError> {
+    ) -> Result<IekfUpdateSummary, IekfUpdateError> {
         let state_prior = self.state.clone();
         let gravity_basis_prior = self.gravity_basis;
         let p_prior = self.covariance;
@@ -225,8 +235,10 @@ impl IekfState {
         let mut observations = Vec::new();
 
         let mut final_error = SVector::zeros();
+        let mut iterations = 0usize;
 
         for _ in 0..config.max_iterations {
+            iterations += 1;
             build_surfel_observation(
                 &state_iter,
                 points,
@@ -262,11 +274,17 @@ impl IekfState {
                 break;
             }
         }
+        let summary = IekfUpdateSummary {
+            points: points.len(),
+            observations: observations.len(),
+            iterations,
+            converged: final_error.norm() < config.min_delta_norm,
+        };
 
         self.state = state_iter;
         self.gravity_basis = gravity_basis_iter;
         self.covariance = reset_covariance(&p_final, &final_error);
-        Ok(())
+        Ok(summary)
     }
 }
 

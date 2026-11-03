@@ -23,7 +23,12 @@ pub struct SurfelMap {
 pub struct SurfelObservation {
     pub surfel_id: SurfelID,
     pub mean_w: Vec3<f64>,
+    /// Geometric scatter covariance of the surfel points (`m2/(n-1)` shape).
     pub covariance_w: Mat3<f64>,
+    /// Plane-parameter covariance (offset + normal-angle uncertainty) for the
+    /// queried point; add this to `covariance_w` and the point noise when
+    /// whitening the IEKF update.
+    pub plane_covariance_w: Mat3<f64>,
     pub eigenvectors: Mat3<f64>,
     pub eigenvalues: Vec3<f64>,
     pub best_score: f64,
@@ -107,6 +112,18 @@ fn helper_interval(count: usize) -> usize {
 }
 
 impl SurfelMap {
+    /// Current association-gate variance floor (m^2) used by `query_surfel`.
+    pub fn association_covariance_eigenvalue_floor(&self) -> f32 {
+        self.surfel_config.association_covariance_eigenvalue_floor
+    }
+
+    /// Update the association-gate variance floor (m^2). The pipeline adapts
+    /// this per frame from the observed association ratio; insertion support
+    /// is unaffected.
+    pub fn set_association_covariance_eigenvalue_floor(&mut self, floor: f32) {
+        self.surfel_config.association_covariance_eigenvalue_floor = floor;
+    }
+
     pub fn new(map_config: SurfelMapConfig, surfel_config: SurfelConfig) -> Self {
         let buckets = HashMap::new();
         let surfels = SlotMap::with_key();
@@ -317,7 +334,7 @@ impl SurfelMap {
             .flat_map(|buckets| buckets.iter().copied())
             .filter_map(|id| self.surfels.get(id).map(|surfel| (id, surfel)));
 
-        let mut best: Option<(SurfelID, f64)> = None;
+        let mut best: Option<(SurfelID, f64, Mat3<f64>)> = None;
         let mut second_best: Option<(SurfelID, f64)> = None;
         let mut seen = HashSet::new();
         for (id, surfel) in candidate_ids {
@@ -327,21 +344,23 @@ impl SurfelMap {
             if surfel.is_growing(self.surfel_config.min_mature_surfel_count) || surfel.count < 2 {
                 continue;
             }
-            let Some((_, _, score)) = surfel.surfel_score(point, &point_w_covariance, &self.surfel_config) else {
+            let Some((_, plane_covariance, score)) =
+                surfel.surfel_score(point, &point_w_covariance, &self.surfel_config)
+            else {
                 continue;
             };
             if score > self.surfel_config.max_mahalanobis_distance.powi(2) as f64 {
                 continue;
             }
 
-            if best.is_none_or(|(_, best_score)| score < best_score) {
-                second_best = best;
-                best = Some((id, score));
+            if best.is_none_or(|(_, best_score, _)| score < best_score) {
+                second_best = best.map(|(id, score, _)| (id, score));
+                best = Some((id, score, plane_covariance));
             } else if second_best.is_none_or(|(_, second_score)| score < second_score) {
                 second_best = Some((id, score));
             }
         }
-        if let Some((best_id, best_score)) = best {
+        if let Some((best_id, best_score, plane_covariance)) = best {
             let surfel = self.surfels.get(best_id).expect(
                 "UnexpectedError: on query: Logically, there should be no missing value here.",
             );
@@ -349,6 +368,7 @@ impl SurfelMap {
                 surfel_id: best_id,
                 mean_w: surfel.mean_w,
                 covariance_w: surfel.m2 / (surfel.count - 1) as f64,
+                plane_covariance_w: plane_covariance,
                 eigenvalues: surfel.eigenvalues,
                 eigenvectors: surfel.eigenvectors,
                 best_score,

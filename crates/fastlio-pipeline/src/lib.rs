@@ -1,5 +1,8 @@
 use anyhow::{Result, anyhow};
-use fastlio_estimator::{iekf::IekfState, optimizer::IekfConfig};
+use fastlio_estimator::{
+    iekf::{IekfState, IekfUpdateSummary},
+    optimizer::IekfConfig,
+};
 use fastlio_imu::ImuIntegrator;
 use fastlio_map::surfel::SurfelMap;
 use fastlio_pointcloud::preprocess::preprocess;
@@ -187,20 +190,27 @@ pub struct MainPipeline {
     pub initializer: ImuInitializer,
     initial_gravity: Option<Vec3<f64>>,
     iekf_config: IekfConfig,
+    // --- association diagnostics ---
+    /// Last frame association ratio (observations / preprocessed points).
+    pub last_observation_ratio: f64,
+    /// Exponential moving average of the association ratio.
+    pub mean_observation_ratio: f64,
+    pub last_update: Option<IekfUpdateSummary>,
 }
 
 impl MainPipeline {
     pub fn new(config: Config) -> Self {
+        let map = SurfelMap::new(
+            config.surfel_map_config.clone().unwrap_or_default(),
+            config.surfel_config.clone().unwrap_or_default(),
+        );
         let iekf_config = IekfConfig {
             max_iterations: config.iekf.max_iterations,
             min_delta_norm: config.iekf.min_delta_norm,
             ..IekfConfig::default()
         };
         Self {
-            map: SurfelMap::new(
-                config.surfel_map_config.clone().unwrap_or_default(),
-                config.surfel_config.clone().unwrap_or_default(),
-            ),
+            map,
             imu_integrator: ImuIntegrator::init(
                 config.mapping.gyr_cov,
                 config.mapping.acc_cov,
@@ -216,6 +226,9 @@ impl MainPipeline {
             initializer: ImuInitializer::default(),
             initial_gravity: None,
             iekf_config,
+            last_observation_ratio: 1.0,
+            mean_observation_ratio: 1.0,
+            last_update: None,
         }
     }
 
@@ -295,7 +308,8 @@ impl MainPipeline {
         let pointcloud = preprocess(&self.config.preprocess, group.lidar)?;
 
         let tracking = if !self.map.is_empty() {
-            self.filter
+            let summary = self
+                .filter
                 .update(
                     &pointcloud.point_cloud,
                     &self.extrinsic,
@@ -303,6 +317,8 @@ impl MainPipeline {
                     &self.iekf_config,
                 )
                 .map_err(|e| anyhow!("IekfUpdateError: {:?}", e))?;
+            self.last_update = Some(summary);
+            self.record_association_ratio(summary);
             true
         } else {
             false
@@ -322,6 +338,17 @@ impl MainPipeline {
         self.map.insert(map_points)?;
 
         Ok(PipelineFrameSummary { tracking })
+    }
+
+    /// Record the per-frame association ratio for diagnostics only.
+    fn record_association_ratio(&mut self, summary: IekfUpdateSummary) {
+        let ratio = if summary.points == 0 {
+            1.0
+        } else {
+            summary.observations as f64 / summary.points as f64
+        };
+        self.last_observation_ratio = ratio;
+        self.mean_observation_ratio = 0.9 * self.mean_observation_ratio + 0.1 * ratio;
     }
 }
 

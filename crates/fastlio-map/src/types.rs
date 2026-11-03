@@ -156,6 +156,22 @@ impl Surfel {
         self.mahalanobis_squared(point, config) as f32 <= support_sigma * support_sigma
     }
 
+    /// Score a point against this surfel for association and return the
+    /// covariance pieces used by the update.
+    ///
+    /// The returned tuple is `(geometric_covariance_w, plane_covariance_w,
+    /// score)`:
+    ///
+    /// - geometric covariance = floored surfel scatter (`m2/(n-1)` shape);
+    /// - plane covariance = uncertainty of the fitted plane parameters
+    ///   propagated to this point: offset variance `l0/n` along the normal,
+    ///   plus normal angular variance `l0/(n*l1)` times the tangential lever
+    ///   arm `|t|^2`;
+    /// - score = Mahalanobis distance using `geo + plane + point covariance`.
+    ///
+    /// The support-domain test rejects points whose tangential projection
+    /// falls outside the surfel's bounded patch, so an infinite-plane
+    /// extrapolation is never accepted.
     pub fn surfel_score(
         &self,
         point_w: &PointXYZI,
@@ -163,22 +179,47 @@ impl Surfel {
         config: &SurfelConfig,
     ) -> Option<(Mat3<f64>, Mat3<f64>, f64)> {
         let delta = point_w.to_vec3_f64() - self.mean_w;
-        // Association uses a floored surfel shape, separate from the insertion
-        // support floor: without it, small/stale indoor surfels make the gate
-        // too tight and the update starves.
+        let e0 = self.eigenvectors.column(0);
+        let e1 = self.eigenvectors.column(1);
+        let e2 = self.eigenvectors.column(2);
+
+        let support_floor = config.covariance_eigenvalue_floor as f64;
+        let support_sigma = config.max_mahalanobis_distance as f64;
+
+        // Support domain: bounded plane patch (tangential ellipse).
+        let s1 = self.eigenvalues[1].max(support_floor);
+        let s2 = self.eigenvalues[2].max(support_floor);
+        let t1 = e1.dot(&delta);
+        let t2 = e2.dot(&delta);
+        let tangent_quad = t1 * t1 / s1 + t2 * t2 / s2;
+        if tangent_quad > support_sigma * support_sigma {
+            return None;
+        }
+
+        // Geometric scatter with the association floor (numerical stability).
         let floor = config.association_covariance_eigenvalue_floor as f64;
         let l0 = self.eigenvalues[0].max(floor);
         let l1 = self.eigenvalues[1].max(floor);
         let l2 = self.eigenvalues[2].max(floor);
-        let shape = self.eigenvectors
-            * Mat3::from_diagonal(&Vec3::new(l0, l1, l2))
-            * self.eigenvectors.transpose();
-        let covariance = shape + point_w_variance;
+        let geometric = e0 * e0.transpose() * l0
+            + e1 * e1.transpose() * l1
+            + e2 * e2.transpose() * l2;
+
+        // Plane-parameter covariance propagated to this point.
+        let count = self.count.max(2) as f64;
+        let normal_spread = self.eigenvalues[0].max(0.0);
+        let offset_variance = normal_spread / count;
+        let angular_variance = normal_spread / (count * s1);
+        let lever_arm = t1 * t1 + t2 * t2;
+        let plane = e0 * e0.transpose() * offset_variance
+            + (e1 * e1.transpose() + e2 * e2.transpose()) * (lever_arm * angular_variance);
+
+        let covariance = geometric + plane + point_w_variance;
         let chol = covariance.cholesky()?;
         let l = chol.l();
         let y = l.solve_lower_triangular(&delta)?;
         let score = y.dot(&y);
-        Some((covariance, l, score))
+        Some((geometric, plane, score))
     }
 
     pub fn within_tangent_support(&self, point: &PointXYZI, config: &SurfelConfig) -> bool {
