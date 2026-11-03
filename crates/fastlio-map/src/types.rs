@@ -160,9 +160,20 @@ impl Surfel {
         &self,
         point_w: &PointXYZI,
         point_w_variance: &Mat3<f64>,
+        config: &SurfelConfig,
     ) -> Option<(Mat3<f64>, Mat3<f64>, f64)> {
         let delta = point_w.to_vec3_f64() - self.mean_w;
-        let covariance = self.m2 / (self.count - 1) as f64 + point_w_variance;
+        // Association uses a floored surfel shape, separate from the insertion
+        // support floor: without it, small/stale indoor surfels make the gate
+        // too tight and the update starves.
+        let floor = config.association_covariance_eigenvalue_floor as f64;
+        let l0 = self.eigenvalues[0].max(floor);
+        let l1 = self.eigenvalues[1].max(floor);
+        let l2 = self.eigenvalues[2].max(floor);
+        let shape = self.eigenvectors
+            * Mat3::from_diagonal(&Vec3::new(l0, l1, l2))
+            * self.eigenvectors.transpose();
+        let covariance = shape + point_w_variance;
         let chol = covariance.cholesky()?;
         let l = chol.l();
         let y = l.solve_lower_triangular(&delta)?;

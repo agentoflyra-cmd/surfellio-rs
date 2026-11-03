@@ -327,7 +327,7 @@ impl SurfelMap {
             if surfel.is_growing(self.surfel_config.min_mature_surfel_count) || surfel.count < 2 {
                 continue;
             }
-            let Some((_, _, score)) = surfel.surfel_score(point, &point_w_covariance) else {
+            let Some((_, _, score)) = surfel.surfel_score(point, &point_w_covariance, &self.surfel_config) else {
                 continue;
             };
             if score > self.surfel_config.max_mahalanobis_distance.powi(2) as f64 {

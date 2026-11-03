@@ -112,6 +112,14 @@ pub struct SurfelConfig {
     pub min_plane_spread_eigenvalue: f32,
     #[serde(default = "default_covariance_eigenvalue_floor")]
     pub covariance_eigenvalue_floor: f32,
+    /// Eigenvalue floor (variance in m^2) applied to a surfel's covariance
+    /// only when scoring associations, not when testing insertion support.
+    /// The value is scene-dependent: indoor stairs/corridors need a wide gate
+    /// (0.25 keeps enough associations instead of diverging), while long-range
+    /// outdoor scans need a tight gate (1e-6); a global 0.25 reintroduces the
+    /// 17 m KA-Urban-East drift.
+    #[serde(default = "default_association_covariance_eigenvalue_floor")]
+    pub association_covariance_eigenvalue_floor: f32,
     pub min_linearity: f32,
     pub min_line_spread_eigenvalue: f32,
     pub min_scattering: f32,
@@ -127,6 +135,8 @@ impl Default for SurfelConfig {
             max_planarity_ratio: 0.10,
             min_plane_spread_eigenvalue: 0.025,
             covariance_eigenvalue_floor: default_covariance_eigenvalue_floor(),
+            association_covariance_eigenvalue_floor:
+                default_association_covariance_eigenvalue_floor(),
             min_linearity: 0.70,
             min_line_spread_eigenvalue: 0.0025,
             min_scattering: 0.60,
@@ -138,6 +148,10 @@ impl Default for SurfelConfig {
 }
 
 fn default_covariance_eigenvalue_floor() -> f32 {
+    1e-6
+}
+
+fn default_association_covariance_eigenvalue_floor() -> f32 {
     1e-6
 }
 

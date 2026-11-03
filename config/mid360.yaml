@@ -33,6 +33,7 @@ surfel_config:
     min_mature_surfel_count: 8
     max_planarity_ratio: 0.10
     min_plane_spread_eigenvalue: 0.005
+    association_covariance_eigenvalue_floor: 0.25
     max_mahalanobis_distance: 2.0
                    
 # publish:
