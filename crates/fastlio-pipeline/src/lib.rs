@@ -71,7 +71,9 @@ impl ImuInitializer {
             .iter()
             .copied()
             .fold(f64::NEG_INFINITY, f64::max);
-        if acc_cov_max <= 0.02 {
+        // Compare variance relative to mean gravity so that IMUs reporting
+        // acceleration in g and m/s² get the same stationary decision.
+        if acc_cov_max / acc_norm.powi(2) <= 0.02 {
             let rotation_between =
                 Rotation3::rotation_between(&acc_unit, &Vec3::new(0.0, 0.0, 1.0))
                     .expect("mean_acc is non-zero by construction.");
@@ -189,6 +191,11 @@ pub struct MainPipeline {
 
 impl MainPipeline {
     pub fn new(config: Config) -> Self {
+        let iekf_config = IekfConfig {
+            max_iterations: config.iekf.max_iterations,
+            min_delta_norm: config.iekf.min_delta_norm,
+            ..IekfConfig::default()
+        };
         Self {
             map: SurfelMap::new(
                 config.surfel_map_config.clone().unwrap_or_default(),
@@ -208,7 +215,7 @@ impl MainPipeline {
             last_imu_for_deskew: None,
             initializer: ImuInitializer::default(),
             initial_gravity: None,
-            iekf_config: IekfConfig::default(),
+            iekf_config,
         }
     }
 

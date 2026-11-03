@@ -164,6 +164,29 @@ pub struct MappingConfig {
     pub extrinsic_r: Mat3<f64>,
 }
 
+/// Iterated-EKF solver tuning, read from the optional `iekf:` YAML section.
+///
+/// `min_delta_norm` is the norm of the 23D error-state correction (rad, m,
+/// m/s, biases, plus the 2D gravity tangent). FAST-LIO uses `max_iteration=4`
+/// with a per-component `|dx_j| < 1e-3` check; the default here keeps the old
+/// `1e-6` norm threshold, and the surfel-025 line measured a large wall-time
+/// win for `1e-3` at negligible trajectory change.
+#[derive(Deserialize, Clone, Copy, Debug)]
+#[serde(default)]
+pub struct IekfTuning {
+    pub max_iterations: usize,
+    pub min_delta_norm: f64,
+}
+
+impl Default for IekfTuning {
+    fn default() -> Self {
+        Self {
+            max_iterations: 10,
+            min_delta_norm: 1.0e-6,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct Config {
     pub common: CommonConfig,
@@ -173,6 +196,8 @@ pub struct Config {
     pub surfel_config: Option<SurfelConfig>,
     #[serde(default)]
     pub surfel_map_config: Option<SurfelMapConfig>,
+    #[serde(default)]
+    pub iekf: IekfTuning,
 }
 
 pub fn read_from_config_path<P: AsRef<Path>>(path: P) -> Result<Config> {
