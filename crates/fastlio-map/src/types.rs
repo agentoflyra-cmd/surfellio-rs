@@ -166,8 +166,11 @@ impl Surfel {
     /// - plane covariance = uncertainty of the fitted plane parameters
     ///   propagated to this point: offset variance `l0/n` along the normal,
     ///   plus normal angular variance `l0/(n*l1)` times the tangential lever
-    ///   arm `|t|^2`;
-    /// - score = Mahalanobis distance using `geo + plane + point covariance`.
+    ///   arm `|t|^2`; used by the IEKF whitening;
+    /// - score = Mahalanobis distance using `geo + plane + point covariance`
+    ///   plus the isotropic map-drift prior `association_map_drift_sigma^2`.
+    ///   The drift term widens only the gate; it is not part of the returned
+    ///   covariances.
     ///
     /// The support-domain test rejects points whose tangential projection
     /// falls outside the surfel's bounded patch, so an infinite-plane
@@ -205,17 +208,25 @@ impl Surfel {
             + e1 * e1.transpose() * l1
             + e2 * e2.transpose() * l2;
 
-        // Plane-parameter covariance propagated to this point.
+        // Plane-parameter covariance propagated to this point. This is the
+        // *fit* uncertainty and is what the IEKF whitens with; the map drift
+        // term below only widens the association gate, because treating drift
+        // as measurement noise would weaken the actual plane constraints and
+        // can let the filter diverge.
         let count = self.count.max(2) as f64;
         let normal_spread = self.eigenvalues[0].max(0.0);
-        let offset_variance = normal_spread / count;
         let angular_variance = normal_spread / (count * s1);
         let lever_arm = t1 * t1 + t2 * t2;
-        let plane = e0 * e0.transpose() * offset_variance
+        let plane = e0 * e0.transpose() * (normal_spread / count)
             + (e1 * e1.transpose() + e2 * e2.transpose()) * (lever_arm * angular_variance);
 
-        let covariance = geometric + plane + point_w_variance;
-        let chol = covariance.cholesky()?;
+        // Association gate covariance: fit covariance + map-drift prior.
+        let drift_sigma = config.association_map_drift_sigma as f64;
+        let gate_covariance = geometric
+            + plane
+            + point_w_variance
+            + Mat3::identity() * (drift_sigma * drift_sigma);
+        let chol = gate_covariance.cholesky()?;
         let l = chol.l();
         let y = l.solve_lower_triangular(&delta)?;
         let score = y.dot(&y);

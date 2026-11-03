@@ -120,6 +120,13 @@ pub struct SurfelConfig {
     /// 17 m KA-Urban-East drift.
     #[serde(default = "default_association_covariance_eigenvalue_floor")]
     pub association_covariance_eigenvalue_floor: f32,
+    /// Standard deviation (m) of the map/localisation drift affecting a
+    /// surfel's plane offset. It is added in quadrature to the association-gate
+    /// covariance only; the IEKF whitening keeps the fit-only plane covariance,
+    /// because treating drift as measurement noise weakens the plane
+    /// constraints and can make the filter diverge. 0 disables the term.
+    #[serde(default = "default_association_map_drift_sigma")]
+    pub association_map_drift_sigma: f32,
     pub min_linearity: f32,
     pub min_line_spread_eigenvalue: f32,
     pub min_scattering: f32,
@@ -137,6 +144,7 @@ impl Default for SurfelConfig {
             covariance_eigenvalue_floor: default_covariance_eigenvalue_floor(),
             association_covariance_eigenvalue_floor:
                 default_association_covariance_eigenvalue_floor(),
+            association_map_drift_sigma: default_association_map_drift_sigma(),
             min_linearity: 0.70,
             min_line_spread_eigenvalue: 0.0025,
             min_scattering: 0.60,
@@ -153,6 +161,10 @@ fn default_covariance_eigenvalue_floor() -> f32 {
 
 fn default_association_covariance_eigenvalue_floor() -> f32 {
     1e-6
+}
+
+fn default_association_map_drift_sigma() -> f32 {
+    0.0
 }
 
 #[derive(Deserialize)]
@@ -192,6 +204,14 @@ pub struct MappingConfig {
 pub struct IekfTuning {
     pub max_iterations: usize,
     pub min_delta_norm: f64,
+    /// Reject an association when the second-best candidate's score is below
+    /// `ambiguity_score_ratio * best_score`. Scores are chi-square-like, so
+    /// larger values reject more (2.0 keeps only clearly-unique matches);
+    /// 0 disables the check.
+    pub ambiguity_score_ratio: f64,
+    /// Huber threshold on the whitened 3D residual norm. `None` disables the
+    /// robust weighting (validated separately from the covariance changes).
+    pub huber_delta: Option<f64>,
 }
 
 impl Default for IekfTuning {
@@ -199,6 +219,8 @@ impl Default for IekfTuning {
         Self {
             max_iterations: 10,
             min_delta_norm: 1.0e-3,
+            ambiguity_score_ratio: 0.0,
+            huber_delta: None,
         }
     }
 }

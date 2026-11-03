@@ -207,6 +207,8 @@ impl MainPipeline {
         let iekf_config = IekfConfig {
             max_iterations: config.iekf.max_iterations,
             min_delta_norm: config.iekf.min_delta_norm,
+            ambiguity_score_ratio: config.iekf.ambiguity_score_ratio,
+            huber_delta: config.iekf.huber_delta,
             ..IekfConfig::default()
         };
         Self {

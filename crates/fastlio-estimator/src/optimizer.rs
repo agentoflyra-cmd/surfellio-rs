@@ -38,6 +38,12 @@ pub struct IekfConfig {
     /// Raw LiDAR point measurement covariance in the LiDAR frame `L`, used
     /// only to whiten the IEKF update and expressed in square meters.
     pub measurement_point_covariance_l: Mat3<f64>,
+    /// Reject an association when the second-best candidate score is below
+    /// `ambiguity_score_ratio * best_score` (0 disables the check).
+    pub ambiguity_score_ratio: f64,
+    /// Huber threshold on the whitened 3D residual norm (`None` disables the
+    /// robust weighting).
+    pub huber_delta: Option<f64>,
     pub min_observations: usize,
 }
 
@@ -49,9 +55,38 @@ impl Default for IekfConfig {
             damping: 1.0e-6,
             association_point_covariance_l: Mat3::identity() * 0.03_f64.powi(2),
             measurement_point_covariance_l: Mat3::identity() * 0.03_f64.powi(2),
+            ambiguity_score_ratio: 0.0,
+            huber_delta: None,
             min_observations: 0,
         }
     }
+}
+
+/// True when the runner-up association explains the point so similarly to the
+/// best one that the match should be rejected. `ratio <= 0` disables the check;
+/// scores are chi-square-like Mahalanobis values, so a ratio of 2 rejects when
+/// the second-best score is within 2x the best score.
+pub(crate) fn association_is_ambiguous(
+    best_score: f64,
+    second_best_score: Option<f64>,
+    ratio: f64,
+) -> bool {
+    if ratio <= 0.0 {
+        return false;
+    }
+    match second_best_score {
+        Some(second) => second < ratio * best_score,
+        None => false,
+    }
+}
+
+/// Huber weight applied to a whitened residual of norm `norm`.
+///
+/// Returns the factor by which the residual and its Jacobian are scaled:
+/// `1.0` inside the threshold and `sqrt(delta / norm)` outside it (equivalent
+/// to inflating the observation covariance by `norm / delta`).
+pub(crate) fn huber_residual_scale(norm: f64, delta: f64) -> f64 {
+    if delta <= 0.0 || norm <= delta { 1.0 } else { (delta / norm).sqrt() }
 }
 
 pub(crate) fn build_surfel_observation(
@@ -87,13 +122,31 @@ pub(crate) fn build_surfel_observation(
                 context: e.to_string(),
             })?;
         if let Some(obs) = observation {
+            // Ambiguity check: two surfels explaining the point equally well
+            // are usually a wrong-association trap (indoor corners, stairs).
+            if association_is_ambiguous(
+                obs.best_score,
+                obs.second_best_score,
+                config.ambiguity_score_ratio,
+            ) {
+                continue;
+            }
             let measurement_covariance = obs.covariance_w
                 + obs.plane_covariance_w
                 + measurement_point_covariance_w;
             let jacobian = linearized_point_to_surfel_observation(state, &point_i, &obs);
             let residual = point_w_vec - obs.mean_w;
-            let (whiten_residual, whiten_jacobian) =
+            let (mut whiten_residual, mut whiten_jacobian) =
                 whiten_surfel_measurement(&measurement_covariance, &residual, &jacobian)?;
+            // Huber weighting on the whitened residual (optional).
+            if let Some(delta) = config.huber_delta {
+                let norm = whiten_residual.norm();
+                let scale = huber_residual_scale(norm, delta);
+                if scale < 1.0 {
+                    whiten_residual *= scale;
+                    whiten_jacobian *= scale;
+                }
+            }
             let surfel_linearized_observation = SurfelLinearizedObservation {
                 residual: whiten_residual,
                 jacobian: whiten_jacobian,
@@ -322,6 +375,10 @@ mod tests {
         };
         let surfel_config = SurfelConfig {
             growing_radius: 3.5,
+            // The point is 0.1 m off the plane; without a gate prior the
+            // 3 cm measurement noise alone would reject it. This mirrors the
+            // map-drift prior used to keep sparse indoor associations alive.
+            association_map_drift_sigma: 0.15,
             ..SurfelConfig::default()
         };
         let mut map = SurfelMap::new(map_config, surfel_config);
@@ -1007,6 +1064,33 @@ mod tests {
             iterated.state.orientation.angle_to(&true_pose.orientation) < 1e-2,
             "converged orientation must match truth"
         );
+    }
+
+    #[test]
+    fn ambiguity_check_rejects_close_runner_up() {
+        assert!(association_is_ambiguous(1.0, Some(1.5), 2.0));
+        assert!(!association_is_ambiguous(1.0, Some(2.5), 2.0));
+        assert!(!association_is_ambiguous(1.0, None, 2.0));
+        assert!(!association_is_ambiguous(1.0, Some(1.5), 0.0));
+        assert!(!association_is_ambiguous(1.0, Some(1.5), -1.0));
+    }
+
+    #[test]
+    fn huber_scale_is_identity_inside_threshold() {
+        assert!((huber_residual_scale(1.0, 2.0) - 1.0).abs() < TOL);
+        assert!((huber_residual_scale(2.0, 2.0) - 1.0).abs() < TOL);
+    }
+
+    #[test]
+    fn huber_scale_clips_whitened_norm_to_delta() {
+        let delta = 2.0;
+        let norm = 8.0;
+        let scale = huber_residual_scale(norm, delta);
+        assert!(scale < 1.0);
+        // The scaled residual norm becomes sqrt(delta * norm), i.e. the
+        // effective residual covariance is inflated by norm / delta.
+        assert!((scale * norm - (delta * norm).sqrt()).abs() < 1e-12);
+        assert!((1.0 / (scale * scale) - norm / delta).abs() < 1e-12);
     }
 
     fn mean_plane_residual(state: &NavState, points: &[PointXYZI], map: &SurfelMap) -> f64 {
