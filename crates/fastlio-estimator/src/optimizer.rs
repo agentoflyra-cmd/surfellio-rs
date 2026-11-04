@@ -2,7 +2,7 @@ use crate::{
     iekf::{box_minus, gravity_box_plus},
     linearized_point_to_surfel_observation, skew,
 };
-use fastlio_map::surfel::SurfelMap;
+use fastlio_map::surfel::{SurfelMap, SurfelObservation};
 use fastlio_types::{LidarImuExtrinsic, Mat2, Mat3, Mat32, NavState, PointXYZI, Vec2, Vec3};
 use nalgebra::{SMatrix, SVector};
 
@@ -44,6 +44,15 @@ pub struct IekfConfig {
     /// Huber threshold on the whitened 3D residual norm (`None` disables the
     /// robust weighting).
     pub huber_delta: Option<f64>,
+    /// Number of association candidates scored per point (1 = the old
+    /// single-best path). With more than one, the candidate with the smallest
+    /// whitened residual is used instead of the gate-score winner.
+    pub association_candidate_count: usize,
+    /// Hard gate score threshold (chi-square-like) used by the soft gate.
+    pub association_score_threshold: f64,
+    /// Soft-gate decay: a candidate with score beyond the threshold gets weight
+    /// `exp(-(score - threshold) / tau)`. 0 keeps the hard rejection.
+    pub association_soft_gate_tau: f64,
     pub min_observations: usize,
 }
 
@@ -57,6 +66,9 @@ impl Default for IekfConfig {
             measurement_point_covariance_l: Mat3::identity() * 0.03_f64.powi(2),
             ambiguity_score_ratio: 0.0,
             huber_delta: None,
+            association_candidate_count: 1,
+            association_score_threshold: 4.0,
+            association_soft_gate_tau: 0.0,
             min_observations: 0,
         }
     }
@@ -89,6 +101,21 @@ pub(crate) fn huber_residual_scale(norm: f64, delta: f64) -> f64 {
     if delta <= 0.0 || norm <= delta { 1.0 } else { (delta / norm).sqrt() }
 }
 
+/// Soft-gate weight for an association score relative to the hard threshold.
+///
+/// Inside the threshold the weight is 1; beyond it the weight decays as
+/// `exp(-(score - threshold) / tau)`, so a marginal match contributes softly
+/// instead of being dropped. `tau <= 0` keeps the hard decision (0 outside).
+pub(crate) fn soft_gate_weight(score: f64, threshold: f64, tau: f64) -> f64 {
+    if score <= threshold {
+        1.0
+    } else if tau <= 0.0 {
+        0.0
+    } else {
+        (-(score - threshold) / tau).exp()
+    }
+}
+
 pub(crate) fn build_surfel_observation(
     state: &NavState,
     points: &[PointXYZI],
@@ -116,12 +143,85 @@ pub(crate) fn build_surfel_observation(
             intensity: point.intensity,
         };
 
-        let observation = map
+        let use_candidates =
+            config.association_candidate_count > 1 || config.association_soft_gate_tau > 0.0;
+        if use_candidates {
+            let score_cap = if config.association_soft_gate_tau > 0.0 {
+                config.association_score_threshold * 4.0
+            } else {
+                config.association_score_threshold
+            };
+            let candidates = map
+                .query_surfel_candidates(
+                    &point_w,
+                    measurement_point_covariance_w,
+                    config.association_candidate_count,
+                    score_cap,
+                )
+                .map_err(|e| IekfUpdateError::MapQueryFailed {
+                    context: e.to_string(),
+                })?;
+            if candidates.is_empty() {
+                continue;
+            }
+            // Multi-candidate association: keep the candidate with the smallest
+            // raw point-to-surfel distance. The whitened residual cannot be
+            // compared across candidates because each uses a different
+            // covariance scale.
+            let mut best: Option<(SurfelObservation, Vec3<f64>, SMatrix<f64, 3, 23>, f64)> = None;
+            for candidate in candidates {
+                let measurement_covariance = candidate.covariance_w
+                    + candidate.plane_covariance_w
+                    + measurement_point_covariance_w;
+                let jacobian = linearized_point_to_surfel_observation(state, &point_i, &candidate);
+                let residual = point_w_vec - candidate.mean_w;
+                let (whiten_residual, whiten_jacobian) =
+                    whiten_surfel_measurement(&measurement_covariance, &residual, &jacobian)?;
+                let raw_norm = residual.norm();
+                if best
+                    .as_ref()
+                    .is_none_or(|(_, _, _, best_norm)| raw_norm < *best_norm)
+                {
+                    best = Some((candidate, whiten_residual, whiten_jacobian, raw_norm));
+                }
+            }
+            let Some((obs, mut whiten_residual, mut whiten_jacobian, _)) = best else {
+                continue;
+            };
+            // Soft gate: scores beyond the hard threshold are down-weighted
+            // continuously instead of being dropped, which avoids the 0/1 flip
+            // between otherwise similar frames.
+            let soft_weight = soft_gate_weight(
+                obs.best_score,
+                config.association_score_threshold,
+                config.association_soft_gate_tau,
+            );
+            if soft_weight <= 0.0 {
+                continue;
+            }
+            let mut scale = if soft_weight < 1.0 {
+                soft_weight.sqrt()
+            } else {
+                1.0
+            };
+            if let Some(delta) = config.huber_delta {
+                let norm = whiten_residual.norm();
+                scale *= huber_residual_scale(norm, delta);
+            }
+            if scale < 1.0 {
+                whiten_residual *= scale;
+                whiten_jacobian *= scale;
+            }
+            out.push(LinearizedObservation::Surfel(SurfelLinearizedObservation {
+                residual: whiten_residual,
+                jacobian: whiten_jacobian,
+            }));
+        } else if let Some(obs) = map
             .query_surfel(&point_w, measurement_point_covariance_w)
             .map_err(|e| IekfUpdateError::MapQueryFailed {
                 context: e.to_string(),
-            })?;
-        if let Some(obs) = observation {
+            })?
+        {
             // Ambiguity check: two surfels explaining the point equally well
             // are usually a wrong-association trap (indoor corners, stairs).
             if association_is_ambiguous(
@@ -1091,6 +1191,16 @@ mod tests {
         // effective residual covariance is inflated by norm / delta.
         assert!((scale * norm - (delta * norm).sqrt()).abs() < 1e-12);
         assert!((1.0 / (scale * scale) - norm / delta).abs() < 1e-12);
+    }
+
+    #[test]
+    fn soft_gate_weight_decays_beyond_threshold() {
+        assert!((soft_gate_weight(1.0, 4.0, 2.0) - 1.0).abs() < TOL);
+        assert!((soft_gate_weight(4.0, 4.0, 2.0) - 1.0).abs() < TOL);
+        let w = soft_gate_weight(6.0, 4.0, 2.0);
+        assert!((w - (-1.0f64).exp()).abs() < 1e-12);
+        assert!(soft_gate_weight(8.0, 4.0, 2.0) < w);
+        assert_eq!(soft_gate_weight(5.0, 4.0, 0.0), 0.0);
     }
 
     fn mean_plane_residual(state: &NavState, points: &[PointXYZI], map: &SurfelMap) -> f64 {

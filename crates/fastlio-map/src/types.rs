@@ -190,12 +190,29 @@ impl Surfel {
         (base + rate * age_sec.max(0.0)).clamp(0.0, max.max(0.0))
     }
 
+    /// Linear fade of the drift prior beyond `association_drift_max_range`:
+    /// near returns keep the full prior, far returns fall back to the tight
+    /// fit-only gate. `0` disables the range gating (always 1).
+    pub(crate) fn drift_range_scale(
+        point_w: &PointXYZI,
+        sensor_w: &Vec3<f64>,
+        config: &SurfelConfig,
+    ) -> f64 {
+        let max_range = config.association_drift_max_range as f64;
+        if max_range <= 0.0 {
+            return 1.0;
+        }
+        let range = (point_w.to_vec3_f64() - *sensor_w).norm();
+        ((max_range - range) / max_range).clamp(0.0, 1.0)
+    }
+
     pub fn surfel_score(
         &self,
         point_w: &PointXYZI,
         point_w_variance: &Mat3<f64>,
         config: &SurfelConfig,
         age_sec: f64,
+        drift_scale: f64,
     ) -> Option<(Mat3<f64>, Mat3<f64>, f64)> {
         let delta = point_w.to_vec3_f64() - self.mean_w;
         let e0 = self.eigenvectors.column(0);
@@ -239,7 +256,7 @@ impl Surfel {
         // Association gate covariance: fit covariance + drift prior. The drift
         // prior grows with the age since the last refit, so stale/indoor
         // surfaces get a wider gate while freshly anchored ones stay tight.
-        let drift_sigma = Self::association_drift_sigma(age_sec, config);
+        let drift_sigma = Self::association_drift_sigma(age_sec, config) * drift_scale;
         let gate_covariance = geometric
             + plane
             + point_w_variance
@@ -370,6 +387,35 @@ mod tests {
     }
 
     #[test]
+    fn drift_range_scale_fades_long_range() {
+        let config = SurfelConfig {
+            association_drift_max_range: 20.0,
+            ..SurfelConfig::default()
+        };
+        let sensor = Vec3::new(0.0, 0.0, 0.0);
+        let near = PointXYZI {
+            x: 5.0,
+            y: 0.0,
+            z: 0.0,
+            intensity: 0.0,
+        };
+        let far = PointXYZI {
+            x: 25.0,
+            y: 0.0,
+            z: 0.0,
+            intensity: 0.0,
+        };
+        assert!((Surfel::drift_range_scale(&near, &sensor, &config) - 0.75).abs() < 1e-6);
+        assert_eq!(Surfel::drift_range_scale(&far, &sensor, &config), 0.0);
+
+        let unlimited = SurfelConfig {
+            association_drift_max_range: 0.0,
+            ..SurfelConfig::default()
+        };
+        assert_eq!(Surfel::drift_range_scale(&far, &sensor, &unlimited), 1.0);
+    }
+
+    #[test]
     fn surfel_score_widens_gate_with_age() {
         let mut surfel = Surfel::from_first_point(&PointXYZI {
             x: 0.0,
@@ -397,11 +443,11 @@ mod tests {
         let point_covariance = Mat3::identity() * 1e-4;
 
         let fresh = surfel
-            .surfel_score(&point, &point_covariance, &config, 0.0)
+            .surfel_score(&point, &point_covariance, &config, 0.0, 1.0)
             .unwrap()
             .2;
         let stale = surfel
-            .surfel_score(&point, &point_covariance, &config, 60.0)
+            .surfel_score(&point, &point_covariance, &config, 60.0, 1.0)
             .unwrap()
             .2;
         assert!(

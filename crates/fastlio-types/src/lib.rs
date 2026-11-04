@@ -134,6 +134,9 @@ pub struct SurfelConfig {
     pub association_drift_rate: f32,
     /// Upper bound (m) of the age-dependent association drift prior.
     pub association_drift_max: f32,
+    /// Range (m) beyond which the association drift prior fades out linearly to
+    /// zero. Long-range returns keep a tight gate; 0 disables the range gating.
+    pub association_drift_max_range: f32,
     pub min_linearity: f32,
     pub min_line_spread_eigenvalue: f32,
     pub min_scattering: f32,
@@ -154,6 +157,7 @@ impl Default for SurfelConfig {
             association_map_drift_sigma: default_association_map_drift_sigma(),
             association_drift_rate: 0.0,
             association_drift_max: 1.0,
+            association_drift_max_range: 0.0,
             min_linearity: 0.70,
             min_line_spread_eigenvalue: 0.0025,
             min_scattering: 0.60,
@@ -221,6 +225,16 @@ pub struct IekfTuning {
     /// Huber threshold on the whitened 3D residual norm. `None` disables the
     /// robust weighting (validated separately from the covariance changes).
     pub huber_delta: Option<f64>,
+    /// Number of association candidates evaluated per point (1 = the single
+    /// best candidate). More than one selects by smallest whitened residual.
+    pub association_candidate_count: usize,
+    /// Hard gate score threshold for the soft gate; `None` uses the surfel
+    /// config's `max_mahalanobis_distance^2`.
+    pub association_score_threshold: Option<f64>,
+    /// Soft-gate decay length in score units: associations beyond the hard
+    /// threshold get weight `exp(-(score - threshold) / tau)`. 0 keeps the hard
+    /// rejection.
+    pub association_soft_gate_tau: f64,
 }
 
 impl Default for IekfTuning {
@@ -230,6 +244,9 @@ impl Default for IekfTuning {
             min_delta_norm: 1.0e-3,
             ambiguity_score_ratio: 0.0,
             huber_delta: None,
+            association_candidate_count: 1,
+            association_score_threshold: None,
+            association_soft_gate_tau: 0.0,
         }
     }
 }

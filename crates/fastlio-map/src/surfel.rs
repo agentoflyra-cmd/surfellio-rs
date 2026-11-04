@@ -19,6 +19,8 @@ pub struct SurfelMap {
     surfel_config: SurfelConfig,
     /// Current frame timestamp (s), set by the pipeline once per frame.
     time_sec: f64,
+    /// Current sensor position in world (m), set by the pipeline once per frame.
+    sensor_position_w: Vec3<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +137,7 @@ impl SurfelMap {
             surfel_map_config: map_config,
             surfel_config,
             time_sec: 0.0,
+            sensor_position_w: Vec3::zeros(),
         }
     }
 
@@ -142,6 +145,11 @@ impl SurfelMap {
     /// creation/refit and the association drift age are evaluated against it.
     pub fn set_time(&mut self, time_sec: f64) {
         self.time_sec = time_sec;
+    }
+
+    /// Set the current sensor position in world (m) for range-dependent gates.
+    pub fn set_sensor_position(&mut self, position_w: Vec3<f64>) {
+        self.sensor_position_w = position_w;
     }
 
     pub fn query_plane(&self, point: &PointXYZI) -> Result<Option<SurfelPlaneObservation>> {
@@ -315,14 +323,18 @@ impl SurfelMap {
         }
     }
 
-    pub fn query_surfel(
+    /// Collect association candidates whose gate score is below `score_cap`,
+    /// sorted by score ascending. Support-domain and maturity filters are the
+    /// same as [`Self::query_surfel`].
+    fn collect_surfel_candidates(
         &self,
         point: &PointXYZI,
-        point_w_covariance: Mat3<f64>,
-    ) -> Result<Option<SurfelObservation>> {
+        point_w_covariance: &Mat3<f64>,
+        score_cap: f64,
+    ) -> Result<Vec<(SurfelID, f64, Mat3<f64>)>> {
         let radius = self.surfel_map_config.search_radius;
         if !point.is_valid() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let mut voxel_key = VoxelKey::new(point, self.surfel_map_config.voxel_size)?;
         let x = voxel_key.x;
@@ -343,8 +355,7 @@ impl SurfelMap {
             .flat_map(|buckets| buckets.iter().copied())
             .filter_map(|id| self.surfels.get(id).map(|surfel| (id, surfel)));
 
-        let mut best: Option<(SurfelID, f64, Mat3<f64>)> = None;
-        let mut second_best: Option<(SurfelID, f64)> = None;
+        let mut found = Vec::new();
         let mut seen = HashSet::new();
         for (id, surfel) in candidate_ids {
             if !seen.insert(id) {
@@ -354,39 +365,82 @@ impl SurfelMap {
                 continue;
             }
             let age_sec = (self.time_sec - surfel.last_refit_time_sec).max(0.0);
-            let Some((_, plane_covariance, score)) =
-                surfel.surfel_score(point, &point_w_covariance, &self.surfel_config, age_sec)
+            let drift_scale =
+                Surfel::drift_range_scale(point, &self.sensor_position_w, &self.surfel_config);
+            let Some((_, plane_covariance, score)) = surfel.surfel_score(
+                point,
+                point_w_covariance,
+                &self.surfel_config,
+                age_sec,
+                drift_scale,
+            )
             else {
                 continue;
             };
-            if score > self.surfel_config.max_mahalanobis_distance.powi(2) as f64 {
+            if score > score_cap {
                 continue;
             }
-
-            if best.is_none_or(|(_, best_score, _)| score < best_score) {
-                second_best = best.map(|(id, score, _)| (id, score));
-                best = Some((id, score, plane_covariance));
-            } else if second_best.is_none_or(|(_, second_score)| score < second_score) {
-                second_best = Some((id, score));
-            }
+            found.push((id, score, plane_covariance));
         }
-        if let Some((best_id, best_score, plane_covariance)) = best {
-            let surfel = self.surfels.get(best_id).expect(
-                "UnexpectedError: on query: Logically, there should be no missing value here.",
-            );
-            Ok(Some(SurfelObservation {
-                surfel_id: best_id,
+        found.sort_by(|a, b| a.1.total_cmp(&b.1));
+        Ok(found)
+    }
+
+    /// Association candidates for one point, sorted by gate score and truncated
+    /// to `max_candidates`. The caller may use several candidates to pick the
+    /// one with the smallest whitened residual (multi-candidate association)
+    /// and to apply a soft gate instead of the hard score cut.
+    pub fn query_surfel_candidates(
+        &self,
+        point: &PointXYZI,
+        point_w_covariance: Mat3<f64>,
+        max_candidates: usize,
+        score_cap: f64,
+    ) -> Result<Vec<SurfelObservation>> {
+        let mut found = self.collect_surfel_candidates(point, &point_w_covariance, score_cap)?;
+        found.truncate(max_candidates.max(1));
+        let mut out = Vec::with_capacity(found.len());
+        for (index, (id, score, plane_covariance)) in found.iter().enumerate() {
+            let Some(surfel) = self.surfels.get(*id) else {
+                continue;
+            };
+            out.push(SurfelObservation {
+                surfel_id: *id,
                 mean_w: surfel.mean_w,
                 covariance_w: surfel.m2 / (surfel.count - 1) as f64,
-                plane_covariance_w: plane_covariance,
+                plane_covariance_w: *plane_covariance,
                 eigenvalues: surfel.eigenvalues,
                 eigenvectors: surfel.eigenvectors,
-                best_score,
-                second_best_score: second_best.map(|(_, score)| score),
-            }))
-        } else {
-            Ok(None)
+                best_score: *score,
+                second_best_score: found.get(index + 1).map(|(_, s, _)| *s),
+            });
         }
+        Ok(out)
+    }
+
+    pub fn query_surfel(
+        &self,
+        point: &PointXYZI,
+        point_w_covariance: Mat3<f64>,
+    ) -> Result<Option<SurfelObservation>> {
+        let score_cap = self.surfel_config.max_mahalanobis_distance.powi(2) as f64;
+        let found = self.collect_surfel_candidates(point, &point_w_covariance, score_cap)?;
+        let Some((best_id, best_score, plane_covariance)) = found.first().copied() else {
+            return Ok(None);
+        };
+        let Some(surfel) = self.surfels.get(best_id) else {
+            return Ok(None);
+        };
+        Ok(Some(SurfelObservation {
+            surfel_id: best_id,
+            mean_w: surfel.mean_w,
+            covariance_w: surfel.m2 / (surfel.count - 1) as f64,
+            plane_covariance_w: plane_covariance,
+            eigenvalues: surfel.eigenvalues,
+            eigenvectors: surfel.eigenvectors,
+            best_score,
+            second_best_score: found.get(1).map(|(_, score, _)| *score),
+        }))
     }
 
     pub fn insert(&mut self, points: impl Iterator<Item = PointXYZI>) -> Result<()> {

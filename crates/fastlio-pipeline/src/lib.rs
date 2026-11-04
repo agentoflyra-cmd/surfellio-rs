@@ -200,15 +200,23 @@ pub struct MainPipeline {
 
 impl MainPipeline {
     pub fn new(config: Config) -> Self {
+        let surfel_config = config.surfel_config.clone().unwrap_or_default();
         let map = SurfelMap::new(
             config.surfel_map_config.clone().unwrap_or_default(),
-            config.surfel_config.clone().unwrap_or_default(),
+            surfel_config.clone(),
         );
+        let gate_score_threshold = config
+            .iekf
+            .association_score_threshold
+            .unwrap_or((surfel_config.max_mahalanobis_distance as f64).powi(2));
         let iekf_config = IekfConfig {
             max_iterations: config.iekf.max_iterations,
             min_delta_norm: config.iekf.min_delta_norm,
             ambiguity_score_ratio: config.iekf.ambiguity_score_ratio,
             huber_delta: config.iekf.huber_delta,
+            association_candidate_count: config.iekf.association_candidate_count,
+            association_score_threshold: gate_score_threshold,
+            association_soft_gate_tau: config.iekf.association_soft_gate_tau,
             ..IekfConfig::default()
         };
         Self {
@@ -313,6 +321,7 @@ impl MainPipeline {
         // Surfel creation/refit timestamps and the age-dependent association
         // drift prior are evaluated against the current frame time.
         self.map.set_time(frame_time_sec);
+        self.map.set_sensor_position(self.filter.state.position);
 
         let tracking = if !self.map.is_empty() {
             let summary = self
