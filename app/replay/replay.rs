@@ -404,7 +404,10 @@ fn write_trajectory(path: &Utf8PathBuf, rows: &[TrajectoryRow]) -> Result<()> {
 }
 
 fn write_surfel_map(path: &Utf8PathBuf, map: &SurfelMap) -> Result<()> {
-    let width = map.surfels().count();
+    // Only active roots describe the map; surfels merged away via the union-find
+    // parent chain are tombstones and must not be exported.
+    let active = || map.surfels().filter(|surfel| surfel.parent.is_none());
+    let width = active().count();
     let config = map.surfel_config();
     let mut writer = WriterInit {
         width: width as u64,
@@ -417,7 +420,7 @@ fn write_surfel_map(path: &Utf8PathBuf, map: &SurfelMap) -> Result<()> {
     .create::<SurfelPcdPoint, _>(path)
     .with_context(|| format!("failed to create surfel map PCD `{path}`"))?;
 
-    for surfel in map.surfels() {
+    for surfel in active() {
         let class_id = match surfel.geometry_class(config) {
             GeometryClass::Plane => 0.0,
             GeometryClass::Line => 1.0,
@@ -514,10 +517,17 @@ fn main() -> Result<()> {
 /// Print surfel-map lifecycle statistics (Phase 2 diagnostics).
 fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
     let lifecycle = map.lifecycle_stats();
+    let active = map.surfels().filter(|surfel| surfel.parent.is_none()).count();
     println!("map lifecycle stats");
     println!(
-        "  total surfels: {} (mature {}, growing {})",
-        lifecycle.total, lifecycle.mature, lifecycle.growing
+        "  total surfels: {} (active roots {}, merged tombstones {})",
+        lifecycle.total,
+        active,
+        lifecycle.total - active
+    );
+    println!(
+        "  active maturity: mature {}, growing {}",
+        lifecycle.mature, lifecycle.growing
     );
     println!(
         "  mean count: {:.1}, mean lambda0: {:.6}",
