@@ -35,6 +35,11 @@ surfel_config:
     min_plane_spread_eigenvalue: 0.005
     association_covariance_eigenvalue_floor: 0.25
     max_mahalanobis_distance: 2.0
+    # Association uses growing surfels with a maturity-scaled confidence, and
+    # mature coplanar surfels are merged off the hot path within a fixed
+    # budget per frame (map maintenance, not trajectory correction).
+    growing_association_weight: 0.2
+    merge_enabled: true
                    
 # publish:
     # path_en:  false

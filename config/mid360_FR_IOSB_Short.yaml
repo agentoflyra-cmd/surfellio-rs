@@ -38,6 +38,11 @@ surfel_config:
     query_surfel_first: true
     association_covariance_eigenvalue_floor: 1.0e-6
     max_mahalanobis_distance: 2.0
+    # Association uses growing surfels with a maturity-scaled confidence, and
+    # mature coplanar surfels are merged off the hot path within a fixed
+    # budget per frame (map maintenance, not trajectory correction).
+    growing_association_weight: 0.2
+    merge_enabled: true
 
 # Iterated-EKF solver. `min_delta_norm` is the norm of the 24-dim error-state
 # correction dx (mixed units: rad, m, m/s, bias, m/s^2), i.e. an
