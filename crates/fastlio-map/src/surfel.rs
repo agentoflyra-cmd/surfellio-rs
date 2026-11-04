@@ -19,6 +19,34 @@ pub struct SurfelMap {
     surfel_config: SurfelConfig,
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct MapLifecycleStats {
+    pub total: usize,
+    pub mature: usize,
+    pub growing: usize,
+    pub mean_count: f64,
+    pub mean_lambda0: f64,
+    /// Count buckets: 0, 1, 2-3, 4-7, 8-15, 16-31, 32-63, 64+.
+    pub count_hist: [u32; 8],
+    /// Surfel-per-voxel buckets: 0, 1, 2-3, 4-7, 8-15, 16-31, 32-63, 64+.
+    pub occupancy_hist: [u32; 8],
+    /// Estimated number of adjacent surfels describing the same plane.
+    pub coplanar_duplicate_pairs: usize,
+}
+
+fn bucket_index(value: usize) -> usize {
+    match value {
+        0 => 0,
+        1 => 1,
+        2..=3 => 2,
+        4..=7 => 3,
+        8..=15 => 4,
+        16..=31 => 5,
+        32..=63 => 6,
+        _ => 7,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SurfelObservation {
     pub surfel_id: SurfelID,
@@ -28,6 +56,9 @@ pub struct SurfelObservation {
     pub eigenvalues: Vec3<f64>,
     pub best_score: f64,
     pub second_best_score: Option<f64>,
+    /// Association confidence in (0, 1]: 1 for mature surfels, less for growing
+    /// surfels taking part with `growing_association_weight`.
+    pub confidence: f64,
 }
 
 /// A planar surface observation returned by [`SurfelMap::query`].
@@ -317,6 +348,8 @@ impl SurfelMap {
             .flat_map(|buckets| buckets.iter().copied())
             .filter_map(|id| self.surfels.get(id).map(|surfel| (id, surfel)));
 
+        let min_mature = self.surfel_config.min_mature_surfel_count;
+        let grossing_weight = self.surfel_config.growing_association_weight;
         let mut best: Option<(SurfelID, f64)> = None;
         let mut second_best: Option<(SurfelID, f64)> = None;
         let mut seen = HashSet::new();
@@ -324,7 +357,11 @@ impl SurfelMap {
             if !seen.insert(id) {
                 continue;
             }
-            if surfel.is_growing(self.surfel_config.min_mature_surfel_count) || surfel.count < 2 {
+            if surfel.count < 2 {
+                continue;
+            }
+            let growing = surfel.is_growing(min_mature);
+            if growing && grossing_weight <= 0.0 {
                 continue;
             }
             let Some((_, _, score)) = surfel.surfel_score(point, &point_w_covariance, &self.surfel_config) else {
@@ -345,6 +382,12 @@ impl SurfelMap {
             let surfel = self.surfels.get(best_id).expect(
                 "UnexpectedError: on query: Logically, there should be no missing value here.",
             );
+            let confidence = if surfel.is_growing(min_mature) {
+                let maturity = (surfel.count as f32 / min_mature.max(1) as f32).clamp(0.0, 1.0);
+                (grossing_weight * maturity) as f64
+            } else {
+                1.0
+            };
             Ok(Some(SurfelObservation {
                 surfel_id: best_id,
                 mean_w: surfel.mean_w,
@@ -353,10 +396,108 @@ impl SurfelMap {
                 eigenvectors: surfel.eigenvectors,
                 best_score,
                 second_best_score: second_best.map(|(_, score)| score),
+                confidence,
             }))
         } else {
             Ok(None)
         }
+    }
+
+    /// Lifecycle statistics of the surfel map (diagnostic for map-quality work):
+    /// maturity split, count/eigenvalue distributions, voxel occupancy and an
+    /// estimate of adjacent surfels describing the same plane.
+    pub fn lifecycle_stats(&self) -> MapLifecycleStats {
+        let mut stats = MapLifecycleStats::default();
+        let min_mature = self.surfel_config.min_mature_surfel_count;
+        let mut total_count = 0u64;
+        let mut total_lambda0 = 0.0;
+        for surfel in self.surfels.values() {
+            stats.total += 1;
+            total_count += surfel.count as u64;
+            total_lambda0 += surfel.eigenvalues[0].max(0.0);
+            if surfel.count >= min_mature {
+                stats.mature += 1;
+            } else {
+                stats.growing += 1;
+            }
+            stats.count_hist[bucket_index(surfel.count)] += 1;
+        }
+        if stats.total > 0 {
+            stats.mean_count = total_count as f64 / stats.total as f64;
+            stats.mean_lambda0 = total_lambda0 / stats.total as f64;
+        }
+        for bucket in self.buckets.values() {
+            stats.occupancy_hist[bucket_index(bucket.len())] += 1;
+        }
+
+        // Coplanar duplicate estimate: sample surfels and count adjacent ones
+        // whose normal and offset match, then scale back up.
+        const SAMPLE_STRIDE: usize = 8;
+        let mut sampled = 0usize;
+        let mut duplicates = 0usize;
+        for (index, (id, surfel)) in self.surfels.iter().enumerate() {
+            if index % SAMPLE_STRIDE != 0 {
+                continue;
+            }
+            sampled += 1;
+            duplicates += self.count_coplanar_neighbours(id, surfel);
+        }
+        if sampled > 0 {
+            stats.coplanar_duplicate_pairs = duplicates * stats.total / sampled;
+        }
+        stats
+    }
+
+    fn count_coplanar_neighbours(&self, id: SurfelID, surfel: &Surfel) -> usize {
+        let voxel = Vec3::new(
+            surfel.mean_w.x as f32,
+            surfel.mean_w.y as f32,
+            surfel.mean_w.z as f32,
+        );
+        let Ok(mut voxel_key) = VoxelKey::from_vec3(voxel, self.surfel_map_config.voxel_size)
+        else {
+            return 0;
+        };
+        let radius = self.surfel_map_config.search_radius;
+        let x = voxel_key.x;
+        let y = voxel_key.y;
+        let z = voxel_key.z;
+        let normal = surfel.eigenvectors.column(0);
+        let mut count = 0;
+        let mut seen = HashSet::new();
+        for vx in x - radius..=x + radius {
+            for vy in y - radius..=y + radius {
+                for vz in z - radius..=z + radius {
+                    voxel_key.x = vx;
+                    voxel_key.y = vy;
+                    voxel_key.z = vz;
+                    let Some(bucket) = self.buckets.get(&voxel_key.pack()) else {
+                        continue;
+                    };
+                    for other_id in bucket.iter().copied() {
+                        if other_id == id || !seen.insert(other_id) {
+                            continue;
+                        }
+                        let Some(other) = self.surfels.get(other_id) else {
+                            continue;
+                        };
+                        let alignment = normal.dot(&other.eigenvectors.column(0)).abs();
+                        if alignment < 0.999 {
+                            continue;
+                        }
+                        let delta = other.mean_w - surfel.mean_w;
+                        if normal.dot(&delta).abs() > 0.05 {
+                            continue;
+                        }
+                        if delta.norm() > 0.6 {
+                            continue;
+                        }
+                        count += 1;
+                    }
+                }
+            }
+        }
+        count
     }
 
     pub fn insert(&mut self, points: impl Iterator<Item = PointXYZI>) -> Result<()> {

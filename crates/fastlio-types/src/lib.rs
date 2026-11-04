@@ -126,6 +126,11 @@ pub struct SurfelConfig {
     pub min_mature_surfel_count: usize,
     pub max_mahalanobis_distance: f32,
     pub growing_radius: f32,
+    /// Weight of a growing surfel (count < `min_mature_surfel_count`) when it
+    /// participates in association. 0 keeps the old behaviour of excluding
+    /// growing surfels entirely; the effective weight also scales with
+    /// `count / min_mature_surfel_count`.
+    pub growing_association_weight: f32,
 }
 
 impl Default for SurfelConfig {
@@ -143,6 +148,7 @@ impl Default for SurfelConfig {
             min_mature_surfel_count: 8,
             max_mahalanobis_distance: 2.0,
             growing_radius: 0.2,
+            growing_association_weight: 0.0,
         }
     }
 }

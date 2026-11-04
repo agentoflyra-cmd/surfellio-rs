@@ -1412,4 +1412,47 @@ mod surfel_test {
             );
         }
     }
+
+    #[test]
+    fn growing_surfels_associate_only_when_weighted() {
+        let points = || {
+            [pt(0.0, 0.0, 0.0), pt(0.1, 0.0, 0.0), pt(0.0, 0.1, 0.0)].into_iter()
+        };
+        let query = pt(0.02, 0.01, 0.0);
+        let covariance = Mat3::identity() * 0.03_f64.powi(2);
+
+        let mut disabled = SurfelMap::new(
+            SurfelMapConfig {
+                voxel_size: 0.5,
+                search_radius: 0,
+            },
+            SurfelConfig::default(),
+        );
+        disabled.insert(points()).unwrap();
+        assert!(
+            disabled.query_surfel(&query, covariance).unwrap().is_none(),
+            "growing surfels must stay excluded when the weight is 0"
+        );
+
+        let mut weighted = SurfelMap::new(
+            SurfelMapConfig {
+                voxel_size: 0.5,
+                search_radius: 0,
+            },
+            SurfelConfig {
+                growing_association_weight: 0.5,
+                ..SurfelConfig::default()
+            },
+        );
+        weighted.insert(points()).unwrap();
+        let observation = weighted
+            .query_surfel(&query, covariance)
+            .unwrap()
+            .expect("growing surfel should associate when weighted");
+        assert!(
+            observation.confidence > 0.0 && observation.confidence <= 0.5,
+            "confidence must scale with the growing weight, got {}",
+            observation.confidence
+        );
+    }
 }

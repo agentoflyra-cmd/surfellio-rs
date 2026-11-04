@@ -89,7 +89,12 @@ pub(crate) fn build_surfel_observation(
                 context: e.to_string(),
             })?;
         if let Some(obs) = observation {
-            let measurement_covariance = obs.covariance_w + measurement_point_covariance_w;
+            // Growing surfels may take part with a confidence below 1: inflate
+            // the measurement covariance by 1/confidence so their residual is
+            // down-weighted by sqrt(confidence) in the IEKF update.
+            let confidence_inflation = 1.0 / obs.confidence.clamp(1.0e-6, 1.0);
+            let measurement_covariance =
+                (obs.covariance_w + measurement_point_covariance_w) * confidence_inflation;
             let jacobian = linearized_point_to_surfel_observation(state, &point_i, &obs);
             let residual = point_w_vec - obs.mean_w;
             let (whiten_residual, whiten_jacobian) =

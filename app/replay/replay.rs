@@ -38,21 +38,25 @@ struct ReplayArgs {
     playback_rate: f64,
     channel_capacity: usize,
     storm_mode: bool,
+    map_stats: bool,
 }
 
 impl ReplayArgs {
     fn parse(args: &[String]) -> Result<Self> {
         if args.len() < 3 {
             bail!(
-                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm]",
+                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats]",
                 args.first().map(String::as_str).unwrap_or("fastlio-replay")
             );
         }
         let mut storm_mode = false;
+        let mut map_stats = false;
         let mut positional = Vec::new();
         for arg in &args[3..] {
             if arg == "--storm" {
                 storm_mode = true;
+            } else if arg == "--map-stats" {
+                map_stats = true;
             } else if arg.starts_with("--") {
                 bail!("unknown replay option `{arg}`");
             } else {
@@ -92,6 +96,7 @@ impl ReplayArgs {
             playback_rate,
             channel_capacity,
             storm_mode,
+            map_stats,
         })
     }
 }
@@ -493,7 +498,27 @@ fn main() -> Result<()> {
         write_surfel_map(path, &pipeline.map)?;
     }
     print_summary(&stats, &replay_config);
+    if args.map_stats {
+        print_map_stats(&pipeline.map);
+    }
     Ok(())
+}
+
+/// Print surfel-map lifecycle statistics (Phase 2 diagnostics).
+fn print_map_stats(map: &SurfelMap) {
+    let stats = map.lifecycle_stats();
+    println!("map lifecycle stats");
+    println!(
+        "  total surfels: {} (mature {}, growing {})",
+        stats.total, stats.mature, stats.growing
+    );
+    println!(
+        "  mean count: {:.1}, mean lambda0: {:.6}",
+        stats.mean_count, stats.mean_lambda0
+    );
+    println!("  count buckets   [0,1,2-3,4-7,8-15,16-31,32-63,64+]: {:?}", stats.count_hist);
+    println!("  voxel occupancy [0,1,2-3,4-7,8-15,16-31,32-63,64+]: {:?}", stats.occupancy_hist);
+    println!("  coplanar duplicate pairs (estimated): {}", stats.coplanar_duplicate_pairs);
 }
 
 #[cfg(test)]
