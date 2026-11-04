@@ -137,6 +137,8 @@ struct ReplayStats {
     last_lidar_time_sec: Option<f64>,
     first_pipeline_error: Option<String>,
     trajectory: Vec<TrajectoryRow>,
+    /// Wall-clock duration of each `process_measure_group` call (ms).
+    frame_durations_ms: Vec<f64>,
 }
 
 struct ProducerAlive(Arc<AtomicBool>);
@@ -258,7 +260,12 @@ fn process_ready_groups(
             .windows(2)
             .filter(|pair| pair[1].offset_time_sec < pair[0].offset_time_sec)
             .count();
-        match pipeline.process_measure_group(group) {
+        let frame_start = Instant::now();
+        let result = pipeline.process_measure_group(group);
+        stats
+            .frame_durations_ms
+            .push(frame_start.elapsed().as_secs_f64() * 1000.0);
+        match result {
             Ok(frame_summary) => {
                 stats.processed_frames += 1;
                 stats.trajectory.push(TrajectoryRow {
@@ -499,26 +506,45 @@ fn main() -> Result<()> {
     }
     print_summary(&stats, &replay_config);
     if args.map_stats {
-        print_map_stats(&pipeline.map);
+        print_map_stats(&pipeline.map, &stats);
     }
     Ok(())
 }
 
 /// Print surfel-map lifecycle statistics (Phase 2 diagnostics).
-fn print_map_stats(map: &SurfelMap) {
-    let stats = map.lifecycle_stats();
+fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
+    let lifecycle = map.lifecycle_stats();
     println!("map lifecycle stats");
     println!(
         "  total surfels: {} (mature {}, growing {})",
-        stats.total, stats.mature, stats.growing
+        lifecycle.total, lifecycle.mature, lifecycle.growing
     );
     println!(
         "  mean count: {:.1}, mean lambda0: {:.6}",
-        stats.mean_count, stats.mean_lambda0
+        lifecycle.mean_count, lifecycle.mean_lambda0
     );
-    println!("  count buckets   [0,1,2-3,4-7,8-15,16-31,32-63,64+]: {:?}", stats.count_hist);
-    println!("  voxel occupancy [0,1,2-3,4-7,8-15,16-31,32-63,64+]: {:?}", stats.occupancy_hist);
-    println!("  coplanar duplicate pairs (estimated): {}", stats.coplanar_duplicate_pairs);
+    println!("  count buckets   [0,1,2-3,4-7,8-15,16-31,32-63,64+]: {:?}", lifecycle.count_hist);
+    println!("  voxel occupancy [0,1,2-3,4-7,8-15,16-31,32-63,64+]: {:?}", lifecycle.occupancy_hist);
+    println!("  coplanar duplicate pairs (estimated): {}", lifecycle.coplanar_duplicate_pairs);
+
+    let maintenance = map.maintenance_stats();
+    println!(
+        "  maintenance: merged_total={} queue_len={} max_chain_depth={}",
+        maintenance.merged_total, maintenance.queue_len, maintenance.max_chain_depth
+    );
+
+    if !stats.frame_durations_ms.is_empty() {
+        let mut sorted = stats.frame_durations_ms.clone();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
+        let p50 = sorted[sorted.len() * 50 / 100];
+        let p99 = sorted[(sorted.len() * 99 / 100).min(sorted.len() - 1)];
+        let max = *sorted.last().unwrap();
+        println!(
+            "  frame latency: mean={mean:.3} ms p50={p50:.3} p99={p99:.3} max={max:.3} ({} frames)",
+            sorted.len()
+        );
+    }
 }
 
 #[cfg(test)]

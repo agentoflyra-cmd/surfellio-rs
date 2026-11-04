@@ -1,6 +1,9 @@
 use anyhow::Result;
 use fastlio_types::{Mat3, PointXYZI, SurfelConfig, Vec3};
+use slotmap::new_key_type;
 use smallvec::SmallVec;
+
+new_key_type! {pub struct SurfelID;}
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
 pub struct VoxelKey {
@@ -80,7 +83,7 @@ pub enum GeometryClass {
     Growing,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Surfel {
     pub mean_w: Vec3<f64>,
     pub eigenvectors: Mat3<f64>,
@@ -90,6 +93,15 @@ pub struct Surfel {
     pub count: usize,
     pub last_refit: usize,
     pub indexed_voxels: SmallVec<[u64; 8]>,
+    /// Union-find parent for coplanar merging: `None` means this surfel is a
+    /// root and owns the aggregated statistics. Query/insert resolve chains.
+    pub parent: Option<SurfelID>,
+    /// Time (s) at which the surfel was first anchored; used to prefer stable
+    /// roots when merging.
+    pub created_time_sec: f64,
+    /// True while the root is pending in the deferred-maintenance queue; keeps
+    /// the queue free of duplicates.
+    pub merge_queued: bool,
 }
 
 impl Surfel {
@@ -106,7 +118,56 @@ impl Surfel {
             count: 1,
             last_refit: 0,
             indexed_voxels: SmallVec::new(),
+            parent: None,
+            created_time_sec: 0.0,
+            merge_queued: false,
         }
+    }
+
+    /// Aggregate another surfel's points into this root using the parallel-axis
+    /// theorem, then refit the plane. The caller guarantees both are roots.
+    pub(crate) fn merge_from(&mut self, other: &Surfel) {
+        let na = self.count as f64;
+        let nb = other.count as f64;
+        let n = na + nb;
+        if n <= 0.0 {
+            return;
+        }
+        let delta = other.mean_w - self.mean_w;
+        self.mean_w += delta * (nb / n);
+        self.m2 += other.m2 + delta * delta.transpose() * (na * nb / n);
+        self.count += other.count;
+        // A merge changes the shape completely: force an immediate refit so
+        // the aggregated statistics match a direct recomputation.
+        self.last_refit = 0;
+        self.refit_from_m2();
+    }
+
+    /// Recompute eigenvectors/eigenvalues from the accumulated `m2`.
+    pub(crate) fn refit_from_m2(&mut self) {
+        if self.count < 2 {
+            return;
+        }
+        let eigen = (self.m2 / (self.count - 1) as f64).symmetric_eigen();
+        let mut eigen_pair = [
+            (
+                eigen.eigenvalues[0],
+                eigen.eigenvectors.column(0).into_owned(),
+            ),
+            (
+                eigen.eigenvalues[1],
+                eigen.eigenvectors.column(1).into_owned(),
+            ),
+            (
+                eigen.eigenvalues[2],
+                eigen.eigenvectors.column(2).into_owned(),
+            ),
+        ];
+        eigen_pair.sort_by(|a, b| a.0.total_cmp(&b.0));
+        self.eigenvectors =
+            Mat3::from_columns(&[eigen_pair[0].1, eigen_pair[1].1, eigen_pair[2].1]);
+        self.eigenvalues = Vec3::new(eigen_pair[0].0, eigen_pair[1].0, eigen_pair[2].0);
+        self.last_refit = self.count;
     }
 
     pub fn plane_distance(&self, point: &PointXYZI) -> f32 {

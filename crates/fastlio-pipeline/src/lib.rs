@@ -291,8 +291,10 @@ impl MainPipeline {
         self.filter.state = predict_state;
         self.filter.covariance = predict_covariance;
 
+        let frame_time_sec = group.lidar.end_timestamp_sec();
         deskew(&mut group.lidar, &segments, &self.extrinsic)?;
         let pointcloud = preprocess(&self.config.preprocess, group.lidar)?;
+        self.map.set_time(frame_time_sec);
 
         let tracking = if !self.map.is_empty() {
             self.filter
@@ -320,6 +322,9 @@ impl MainPipeline {
         });
 
         self.map.insert(map_points)?;
+        // Deferred map maintenance (coplanar merging) runs on a fixed budget so
+        // the scan-to-map hot path stays predictable.
+        self.map.process_maintenance();
 
         Ok(PipelineFrameSummary { tracking })
     }

@@ -131,6 +131,23 @@ pub struct SurfelConfig {
     /// growing surfels entirely; the effective weight also scales with
     /// `count / min_mature_surfel_count`.
     pub growing_association_weight: f32,
+    /// Enable deferred coplanar surfel merging (union-find with aggregated
+    /// statistics). Disabled by default; merges run off the hot path via the
+    /// maintenance queue.
+    pub merge_enabled: bool,
+    /// Minimum |normal1 · normal2| for two surfels to be merged.
+    pub merge_max_normal_alignment: f32,
+    /// Maximum plane-offset difference (m) for merging.
+    pub merge_max_offset: f32,
+    /// Maximum distance (m) between the two surfel means for merging.
+    pub merge_max_distance: f32,
+    /// Hard cap on the pending merge queue: candidates beyond it are dropped so
+    /// the queue cannot grow without bound under a high input rate.
+    pub merge_queue_limit: usize,
+    /// Maximum merge tasks processed per frame (deferred maintenance budget).
+    pub maintenance_max_tasks: usize,
+    /// Maximum union-find chain depth allowed for a merge (keeps lookups short).
+    pub maintenance_max_depth: usize,
 }
 
 impl Default for SurfelConfig {
@@ -149,6 +166,13 @@ impl Default for SurfelConfig {
             max_mahalanobis_distance: 2.0,
             growing_radius: 0.2,
             growing_association_weight: 0.0,
+            merge_enabled: false,
+            merge_max_normal_alignment: 0.999,
+            merge_max_offset: 0.05,
+            merge_max_distance: 0.6,
+            merge_queue_limit: 4096,
+            maintenance_max_tasks: 32,
+            maintenance_max_depth: 8,
         }
     }
 }

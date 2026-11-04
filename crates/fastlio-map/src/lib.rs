@@ -1455,4 +1455,149 @@ mod surfel_test {
             observation.confidence
         );
     }
+
+    fn surfel_from_points(points: &[(f64, f64, f64)]) -> Surfel {
+        let mut iter = points.iter();
+        let (x, y, z) = *iter.next().expect("at least one point");
+        let mut surfel = Surfel::from_first_point(&pt(x as f32, y as f32, z as f32));
+        for (x, y, z) in iter {
+            let mean = Vec3::new(*x, *y, *z);
+            surfel.count += 1;
+            let delta = mean - surfel.mean_w;
+            let n = surfel.count as f64;
+            surfel.mean_w += delta / n;
+            surfel.m2 += delta * delta.transpose() * ((n - 1.0) / n);
+        }
+        surfel.refit_from_m2();
+        surfel
+    }
+
+    #[test]
+    fn merge_aggregates_match_direct_recomputation() {
+        let left = [
+            (-0.2, 0.0, 0.0),
+            (-0.1, 0.02, 0.0),
+            (0.0, -0.02, 0.0),
+            (0.1, 0.01, 0.0),
+        ];
+        let right = [
+            (0.25, 0.0, 0.0),
+            (0.35, 0.03, 0.0),
+            (0.45, -0.01, 0.0),
+            (0.55, 0.02, 0.0),
+        ];
+
+        let mut root = surfel_from_points(&left);
+        let child = surfel_from_points(&right);
+        root.merge_from(&child);
+
+        let combined: Vec<(f64, f64, f64)> = left.iter().chain(right.iter()).copied().collect();
+        let expected = surfel_from_points(&combined);
+
+        assert_eq!(root.count, expected.count);
+        assert!((root.mean_w - expected.mean_w).norm() < 1e-12);
+        assert!((root.m2 - expected.m2).norm() < 1e-9);
+        assert!((root.eigenvalues - expected.eigenvalues).norm() < 1e-9);
+    }
+
+    #[test]
+    fn merges_form_valid_forest_without_cycles() {
+        let config = SurfelConfig {
+            growing_radius: 0.2,
+            min_mature_surfel_count: 4,
+            merge_enabled: true,
+            merge_max_normal_alignment: 0.99,
+            merge_max_offset: 0.05,
+            merge_max_distance: 0.8,
+            maintenance_max_tasks: 32,
+            maintenance_max_depth: 8,
+            ..SurfelConfig::default()
+        };
+        let mut map = SurfelMap::new(
+            SurfelMapConfig {
+                voxel_size: 0.2,
+                search_radius: 0,
+            },
+            config,
+        );
+        // Two mature coplanar patches ~0.5 m apart, plus one separate patch.
+        let mut points = Vec::new();
+        for i in 0..8 {
+            points.push(pt(-0.25 + 0.002 * i as f32, 0.01 * i as f32, 0.0));
+            points.push(pt(0.25 + 0.002 * i as f32, 0.01 * i as f32, 0.0));
+            points.push(pt(3.0 + 0.002 * i as f32, 0.01 * i as f32, 0.0));
+        }
+        map.insert(points.into_iter()).unwrap();
+        for _ in 0..8 {
+            map.process_maintenance();
+        }
+        assert!(map.maintenance_stats().merged_total > 0, "expected at least one merge");
+
+        let ids: Vec<_> = map.surfels.keys().collect();
+        for id in ids {
+            let mut cursor = id;
+            let mut steps = 0;
+            let mut visited = std::collections::HashSet::new();
+            loop {
+                assert!(visited.insert(cursor), "parent chain contains a cycle");
+                let surfel = map.surfels.get(cursor).expect("parent must exist");
+                match surfel.parent {
+                    Some(parent) => {
+                        assert_ne!(parent, cursor, "self-parent");
+                        cursor = parent;
+                        steps += 1;
+                        assert!(steps <= 64, "parent chain too long");
+                    }
+                    None => break,
+                }
+            }
+        }
+        assert!(map.maintenance_stats().max_chain_depth <= 8);
+    }
+
+    #[test]
+    fn merged_root_is_discoverable_from_its_support() {
+        let config = SurfelConfig {
+            growing_radius: 0.2,
+            min_mature_surfel_count: 4,
+            merge_enabled: true,
+            merge_max_normal_alignment: 0.99,
+            merge_max_offset: 0.05,
+            merge_max_distance: 0.8,
+            ..SurfelConfig::default()
+        };
+        let mut map = SurfelMap::new(
+            SurfelMapConfig {
+                voxel_size: 0.2,
+                search_radius: 0,
+            },
+            config,
+        );
+        let mut points = Vec::new();
+        for i in 0..8 {
+            points.push(pt(-0.2 + 0.002 * i as f32, 0.01 * i as f32, 0.0));
+            points.push(pt(0.3 + 0.002 * i as f32, 0.01 * i as f32, 0.0));
+        }
+        map.insert(points.into_iter()).unwrap();
+        for _ in 0..8 {
+            map.process_maintenance();
+        }
+        assert!(map.maintenance_stats().merged_total > 0);
+
+        let covariance = Mat3::identity() * 0.03_f64.powi(2);
+        let left_query = pt(-0.18, 0.04, 0.0);
+        let right_query = pt(0.22, 0.04, 0.0);
+        let left = map
+            .query_surfel(&left_query, covariance)
+            .unwrap()
+            .expect("left patch must associate");
+        let right = map
+            .query_surfel(&right_query, covariance)
+            .unwrap()
+            .expect("right patch must associate");
+        assert_eq!(
+            left.surfel_id, right.surfel_id,
+            "both patches must resolve to the merged root"
+        );
+    }
 }
