@@ -1600,4 +1600,52 @@ mod surfel_test {
             "both patches must resolve to the merged root"
         );
     }
+
+    #[test]
+    fn growing_fragments_merge_by_proximity_only() {
+        let config = SurfelConfig {
+            // Small insert radius keeps the two fragments apart at insertion...
+            growing_radius: 0.02,
+            min_mature_surfel_count: 8,
+            merge_enabled: true,
+            // ...while the merge radius is larger and only uses proximity.
+            merge_growing_enabled: true,
+            merge_growing_radius: 0.1,
+            ..SurfelConfig::default()
+        };
+        let mut map = SurfelMap::new(
+            SurfelMapConfig {
+                voxel_size: 0.5,
+                search_radius: 0,
+            },
+            config,
+        );
+        let mut points = Vec::new();
+        for i in 0..3 {
+            points.push(pt(0.001 * i as f32, 0.0, 0.0));
+            points.push(pt(0.06 + 0.001 * i as f32, 0.0, 0.0));
+        }
+        map.insert(points.into_iter()).unwrap();
+        assert_eq!(
+            map.surfels()
+                .filter(|surfel| surfel.parent.is_none())
+                .count(),
+            2,
+            "insertion must keep two separate growing fragments"
+        );
+
+        for _ in 0..8 {
+            map.process_maintenance();
+        }
+        assert!(
+            map.maintenance_stats().merged_total >= 1,
+            "growing fragments inside merge_growing_radius must merge"
+        );
+        let roots: Vec<_> = map
+            .surfels()
+            .filter(|surfel| surfel.parent.is_none())
+            .collect();
+        assert_eq!(roots.len(), 1, "the two fragments must form one root");
+        assert_eq!(roots[0].count, 6, "counts must be aggregated");
+    }
 }

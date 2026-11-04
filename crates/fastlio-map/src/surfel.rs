@@ -686,11 +686,122 @@ impl SurfelMap {
         let Some(surfel) = self.surfels.get_mut(root) else {
             return;
         };
-        if surfel.is_growing(self.surfel_config.min_mature_surfel_count) || surfel.merge_queued {
+        let growing = surfel.is_growing(self.surfel_config.min_mature_surfel_count);
+        if surfel.merge_queued || (growing && !self.surfel_config.merge_growing_enabled) {
             return;
         }
         surfel.merge_queued = true;
         self.merge_queue.push_back(root);
+    }
+
+    /// Proximity-only merge of growing fragments. Growing surfels have too few
+    /// points for reliable eigenvectors, so only the centroid distance is
+    /// tested (matching the engineering-baseline `should_merge_growing`).
+    /// Absorbs nearby growing roots into the one with more points and returns
+    /// how many merges happened.
+    fn merge_growing_neighbours(
+        &mut self,
+        root: SurfelID,
+        surfel: &Surfel,
+        max_depth: usize,
+    ) -> usize {
+        const MAX_TARGETS: usize = 8;
+        let radius = self.surfel_config.merge_growing_radius as f64;
+        if radius <= 0.0 {
+            return 0;
+        }
+        let min_mature = self.surfel_config.min_mature_surfel_count;
+        let Ok(voxel_key) = VoxelKey::from_vec3(
+            surfel.mean_w.cast(),
+            self.surfel_map_config.voxel_size,
+        ) else {
+            return 0;
+        };
+        let scan_radius = ((radius / self.surfel_map_config.voxel_size as f64).ceil() as i32)
+            .max(1);
+        let mut targets = Vec::new();
+        let mut seen = HashSet::new();
+        'scan: for vx in voxel_key.x - scan_radius..=voxel_key.x + scan_radius {
+            for vy in voxel_key.y - scan_radius..=voxel_key.y + scan_radius {
+                for vz in voxel_key.z - scan_radius..=voxel_key.z + scan_radius {
+                    let Some(bucket) = self.buckets.get(&VoxelKey { x: vx, y: vy, z: vz }.pack())
+                    else {
+                        continue;
+                    };
+                    for other_id in bucket.iter().copied() {
+                        let (other, _) = self.resolve_root(other_id);
+                        if other == root || !seen.insert(other) {
+                            continue;
+                        }
+                        let Some(other_surfel) = self.surfels.get(other) else {
+                            continue;
+                        };
+                        if !other_surfel.is_growing(min_mature) {
+                            continue;
+                        }
+                        if (other_surfel.mean_w - surfel.mean_w).norm() <= radius {
+                            targets.push(other);
+                            if targets.len() >= MAX_TARGETS {
+                                break 'scan;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut merged = 0usize;
+        for target in targets {
+            let (target_root, target_depth) = self.resolve_root(target);
+            self.max_chain_depth = self.max_chain_depth.max(target_depth);
+            if target_root == root || target_depth >= max_depth {
+                continue;
+            }
+            let Some(current_surfel) = self.surfels.get(root) else {
+                break;
+            };
+            let Some(target_surfel) = self.surfels.get(target_root) else {
+                continue;
+            };
+            if !target_surfel.is_growing(min_mature)
+                || (target_surfel.mean_w - current_surfel.mean_w).norm() > radius
+            {
+                continue;
+            }
+            // Prefer the root with more points: it is closer to maturity.
+            let (new_root, child) = if current_surfel.count >= target_surfel.count {
+                (root, target_root)
+            } else {
+                (target_root, root)
+            };
+            let Some(child_surfel) = self.surfels.get(child).cloned() else {
+                continue;
+            };
+            {
+                let Some(parent_surfel) = self.surfels.get_mut(new_root) else {
+                    continue;
+                };
+                parent_surfel.merge_from(&child_surfel);
+            }
+            self.detach_from_index(child);
+            if let Some(child_surfel) = self.surfels.get_mut(child) {
+                child_surfel.parent = Some(new_root);
+            }
+            if self.reindex_surfel(new_root).is_err() {
+                continue;
+            }
+            if let Some(merged_root) = self.surfels.get_mut(new_root) {
+                merged_root.merge_queued = false;
+            }
+            merged += 1;
+            self.merged_total += 1;
+            // The absorbing root became the child: stop growing from the stale
+            // root, the queue entry will resolve through the parent chain.
+            if new_root != root {
+                break;
+            }
+        }
+        merged
     }
 
     /// Coplanar root neighbours of a surfel, scanned at maintenance time.
@@ -785,6 +896,21 @@ impl SurfelMap {
                     continue;
                 };
                 if surfel.is_growing(min_mature) {
+                    // Growing fragments merge on proximity alone; keep the
+                    // absorbing root queued while it is still growing so its
+                    // count can keep accumulating across frames.
+                    if !self.surfel_config.merge_growing_enabled {
+                        continue;
+                    }
+                    let absorbed = self.merge_growing_neighbours(root, &surfel, max_depth);
+                    merged += absorbed;
+                    if absorbed > 0
+                        && let Some(absorbed_root) = self.surfels.get(root)
+                        && absorbed_root.parent.is_none()
+                        && absorbed_root.is_growing(min_mature)
+                    {
+                        self.enqueue_merge_candidate(root);
+                    }
                     continue;
                 }
                 let targets = self.coplanar_neighbours(root, &surfel);

@@ -148,6 +148,13 @@ pub struct SurfelConfig {
     pub maintenance_max_tasks: usize,
     /// Maximum union-find chain depth allowed for a merge (keeps lookups short).
     pub maintenance_max_depth: usize,
+    /// Enable proximity-only merging of two growing surfels (growing
+    /// eigenvectors are unreliable, so only their distance is tested). This is
+    /// more aggressive than the mature coplanarity test: it accumulates counts
+    /// toward maturity but can join fragments of unrelated surfaces.
+    pub merge_growing_enabled: bool,
+    /// Maximum distance (m) between two growing surfel means for a merge.
+    pub merge_growing_radius: f32,
 }
 
 impl Default for SurfelConfig {
@@ -173,6 +180,8 @@ impl Default for SurfelConfig {
             merge_queue_limit: 4096,
             maintenance_max_tasks: 32,
             maintenance_max_depth: 8,
+            merge_growing_enabled: false,
+            merge_growing_radius: 0.4,
         }
     }
 }
