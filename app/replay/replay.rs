@@ -1,9 +1,9 @@
 use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8PathBuf;
 use fastlio_dataset::{ReadStats, SensorEvent, read_mcap_events_on_topics};
-use fastlio_map::{surfel::SurfelMap, types::GeometryClass};
+use fastlio_map::{surfel::SurfelMap, types::{GeometryClass, Surfel}};
 use fastlio_pipeline::{MainPipeline, PipelineFrameSummary, synchronizer::MeasurementSynchronizer};
-use fastlio_types::{NavState, read_from_config_path};
+use fastlio_types::{Mat3, NavState, read_from_config_path};
 use pcd_rs::{DataKind, PcdSerialize, WriterInit};
 use ringbuffer_spsc::{RingBufferReader, RingBufferWriter, ringbuffer};
 use std::env;
@@ -35,6 +35,7 @@ struct ReplayArgs {
     config_path: Utf8PathBuf,
     trajectory_path: Option<Utf8PathBuf>,
     surfel_map_path: Option<Utf8PathBuf>,
+    gaussian_ply_path: Option<Utf8PathBuf>,
     playback_rate: f64,
     channel_capacity: usize,
     storm_mode: bool,
@@ -45,18 +46,25 @@ impl ReplayArgs {
     fn parse(args: &[String]) -> Result<Self> {
         if args.len() < 3 {
             bail!(
-                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats]",
+                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>]",
                 args.first().map(String::as_str).unwrap_or("fastlio-replay")
             );
         }
         let mut storm_mode = false;
         let mut map_stats = false;
+        let mut gaussian_ply_path = None;
         let mut positional = Vec::new();
-        for arg in &args[3..] {
+        let mut iter = args[3..].iter();
+        while let Some(arg) = iter.next() {
             if arg == "--storm" {
                 storm_mode = true;
             } else if arg == "--map-stats" {
                 map_stats = true;
+            } else if arg == "--gaussian-ply" {
+                let Some(path) = iter.next() else {
+                    bail!("--gaussian-ply requires an output path");
+                };
+                gaussian_ply_path = Some(Utf8PathBuf::from(path.as_str()));
             } else if arg.starts_with("--") {
                 bail!("unknown replay option `{arg}`");
             } else {
@@ -93,6 +101,7 @@ impl ReplayArgs {
             surfel_map_path: positional
                 .get(3)
                 .map(|path| Utf8PathBuf::from(path.as_str())),
+            gaussian_ply_path,
             playback_rate,
             channel_capacity,
             storm_mode,
@@ -443,6 +452,149 @@ fn write_surfel_map(path: &Utf8PathBuf, map: &SurfelMap) -> Result<()> {
     Ok(())
 }
 
+/// Number of little-endian `f32` fields written per Gaussian vertex.
+const GAUSSIAN_PLY_FIELDS: usize = 17;
+const SH_C0: f64 = 0.282_094_791_796_743_77;
+
+/// Export the active surfel roots as a 3D Gaussian Splatting PLY (INRIA 3DGS
+/// layout, degree-0 SH) that viewers such as SuperSplat can open directly.
+///
+/// Each surfel becomes one anisotropic Gaussian: center = `mean_w`, rotation =
+/// the plane eigenbasis, scales = `sqrt(eigenvalues)` with a small floor on the
+/// normal so thin disks stay visible, colour from the geometry class, opacity
+/// from maturity.
+fn write_gaussian_ply(path: &Utf8PathBuf, map: &SurfelMap) -> Result<()> {
+    let config = map.surfel_config();
+    let active: Vec<_> = map
+        .surfels()
+        .filter(|surfel| surfel.parent.is_none())
+        .collect();
+    let file = File::create(path)
+        .with_context(|| format!("failed to create gaussian splat PLY `{path}`"))?;
+    let mut writer = BufWriter::new(file);
+    writer.write_all(b"ply\n")?;
+    writer.write_all(b"format binary_little_endian 1.0\n")?;
+    writer.write_all(b"comment fastlio-rs surfel map exported as 3DGS degree-0 SH\n")?;
+    writeln!(writer, "element vertex {}", active.len())?;
+    for field in [
+        "x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "opacity", "scale_0",
+        "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3",
+    ] {
+        writeln!(writer, "property float {field}")?;
+    }
+    writer.write_all(b"end_header\n")?;
+
+    let mut batch: Vec<u8> = Vec::with_capacity(GAUSSIAN_PLY_FIELDS * 4 * 4096);
+    for surfel in &active {
+        let normal = surfel.eigenvectors.column(0);
+        let quaternion = surfel_quaternion(surfel);
+        let color = gaussian_color(surfel.geometry_class(config));
+        let maturity =
+            (surfel.count as f64 / config.min_mature_surfel_count.max(1) as f64).min(1.0);
+        let opacity = (0.45 + 0.5 * maturity).clamp(0.3, 0.95);
+        let scales = [
+            surfel.eigenvalues[0].max(0.0).sqrt().clamp(0.02, 1.0),
+            surfel.eigenvalues[1].max(0.0).sqrt().clamp(0.02, 3.0),
+            surfel.eigenvalues[2].max(0.0).sqrt().clamp(0.02, 3.0),
+        ];
+        let values = [
+            surfel.mean_w.x,
+            surfel.mean_w.y,
+            surfel.mean_w.z,
+            normal.x,
+            normal.y,
+            normal.z,
+            (color[0] - 0.5) / SH_C0,
+            (color[1] - 0.5) / SH_C0,
+            (color[2] - 0.5) / SH_C0,
+            logit(opacity),
+            scales[0].ln(),
+            scales[1].ln(),
+            scales[2].ln(),
+            quaternion[0],
+            quaternion[1],
+            quaternion[2],
+            quaternion[3],
+        ];
+        for value in values {
+            batch.extend_from_slice(&(value as f32).to_le_bytes());
+        }
+        if batch.len() >= GAUSSIAN_PLY_FIELDS * 4 * 4096 {
+            writer.write_all(&batch)?;
+            batch.clear();
+        }
+    }
+    writer.write_all(&batch)?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn logit(probability: f64) -> f64 {
+    (probability / (1.0 - probability)).ln()
+}
+
+/// Per-class colour (linear RGB) for the splat export.
+fn gaussian_color(class: GeometryClass) -> [f64; 3] {
+    match class {
+        GeometryClass::Plane => [0.72, 0.76, 0.82],
+        GeometryClass::Line => [0.95, 0.78, 0.28],
+        GeometryClass::Scatter => [0.90, 0.55, 0.32],
+        GeometryClass::Growing => [0.35, 0.85, 0.50],
+        GeometryClass::Degenerate => [0.90, 0.35, 0.35],
+    }
+}
+
+/// Rotation (w, x, y, z) of the surfel's plane eigenbasis, with the third axis
+/// flipped when needed so the basis stays right-handed.
+fn surfel_quaternion(surfel: &Surfel) -> [f64; 4] {
+    let mut rotation = surfel.eigenvectors;
+    if rotation.determinant() < 0.0 {
+        let flipped = -rotation.column(2).into_owned();
+        rotation.set_column(2, &flipped);
+    }
+    rotation_matrix_to_quaternion(&rotation)
+}
+
+/// Convert a right-handed rotation matrix to a normalized (w, x, y, z) quaternion.
+fn rotation_matrix_to_quaternion(rotation: &Mat3<f64>) -> [f64; 4] {
+    let trace = rotation[(0, 0)] + rotation[(1, 1)] + rotation[(2, 2)];
+    let (w, x, y, z) = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        (
+            0.25 * s,
+            (rotation[(2, 1)] - rotation[(1, 2)]) / s,
+            (rotation[(0, 2)] - rotation[(2, 0)]) / s,
+            (rotation[(1, 0)] - rotation[(0, 1)]) / s,
+        )
+    } else if rotation[(0, 0)] > rotation[(1, 1)] && rotation[(0, 0)] > rotation[(2, 2)] {
+        let s = (1.0 + rotation[(0, 0)] - rotation[(1, 1)] - rotation[(2, 2)]).sqrt() * 2.0;
+        (
+            (rotation[(2, 1)] - rotation[(1, 2)]) / s,
+            0.25 * s,
+            (rotation[(0, 1)] + rotation[(1, 0)]) / s,
+            (rotation[(0, 2)] + rotation[(2, 0)]) / s,
+        )
+    } else if rotation[(1, 1)] > rotation[(2, 2)] {
+        let s = (1.0 + rotation[(1, 1)] - rotation[(0, 0)] - rotation[(2, 2)]).sqrt() * 2.0;
+        (
+            (rotation[(0, 2)] - rotation[(2, 0)]) / s,
+            (rotation[(0, 1)] + rotation[(1, 0)]) / s,
+            0.25 * s,
+            (rotation[(1, 2)] + rotation[(2, 1)]) / s,
+        )
+    } else {
+        let s = (1.0 + rotation[(2, 2)] - rotation[(0, 0)] - rotation[(1, 1)]).sqrt() * 2.0;
+        (
+            (rotation[(1, 0)] - rotation[(0, 1)]) / s,
+            (rotation[(0, 2)] + rotation[(2, 0)]) / s,
+            (rotation[(1, 2)] + rotation[(2, 1)]) / s,
+            0.25 * s,
+        )
+    };
+    let norm = (w * w + x * x + y * y + z * z).sqrt();
+    [w / norm, x / norm, y / norm, z / norm]
+}
+
 fn print_summary(stats: &ReplayStats, config: &ReplayConfig) {
     println!("replay complete");
     println!("  total messages: {}", stats.read.total_messages);
@@ -507,6 +659,9 @@ fn main() -> Result<()> {
     if let Some(path) = &args.surfel_map_path {
         write_surfel_map(path, &pipeline.map)?;
     }
+    if let Some(path) = &args.gaussian_ply_path {
+        write_gaussian_ply(path, &pipeline.map)?;
+    }
     print_summary(&stats, &replay_config);
     if args.map_stats {
         print_map_stats(&pipeline.map, &stats);
@@ -560,7 +715,9 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fastlio_types::{ImuSample, LidarFrame, Vec3};
+    use fastlio_types::{
+        ImuSample, LidarFrame, PointXYZI, SurfelConfig, SurfelMapConfig, Vec3,
+    };
     use std::fs;
 
     fn imu_event(t: f64) -> SensorEvent {
@@ -677,5 +834,73 @@ mod tests {
         let dead = AtomicBool::new(false);
         assert!(producer.push(1).is_none());
         assert!(push_blocking(&mut producer, 2, &dead).is_err());
+    }
+
+    /// Rotate a vector by the (w, x, y, z) quaternion using Rodrigues' formula.
+    fn rotate_by_quaternion(vector: Vec3<f64>, quaternion: [f64; 4]) -> Vec3<f64> {
+        let [w, x, y, z] = quaternion;
+        let q = Vec3::new(x, y, z);
+        vector + 2.0 * w * q.cross(&vector) + 2.0 * q.cross(&q.cross(&vector))
+    }
+
+    #[test]
+    fn rotation_matrix_converts_to_equivalent_quaternion() {
+        // 90 degree rotation about z: maps (1, 0, 0) to (0, 1, 0).
+        let rotation = Mat3::new(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+        let quaternion = rotation_matrix_to_quaternion(&rotation);
+        let image = rotate_by_quaternion(Vec3::new(1.0, 0.0, 0.0), quaternion);
+        assert!((image - Vec3::new(0.0, 1.0, 0.0)).norm() < 1e-12);
+
+        let identity = rotation_matrix_to_quaternion(&Mat3::identity());
+        assert!((identity[0].abs() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn gaussian_ply_writes_inria_header_and_vertex_payload() {
+        let mut map = SurfelMap::new(
+            SurfelMapConfig {
+                voxel_size: 0.4,
+                search_radius: 0,
+            },
+            SurfelConfig::default(),
+        );
+        let points: Vec<PointXYZI> = (0..16)
+            .map(|i| PointXYZI {
+                x: i as f32 * 0.01,
+                y: (i % 3) as f32 * 0.01,
+                z: 0.0,
+                intensity: 0.0,
+            })
+            .collect();
+        map.insert(points.into_iter()).unwrap();
+
+        let path = std::env::temp_dir().join("fastlio_gaussian_ply_test.ply");
+        let utf8_path = Utf8PathBuf::from_path_buf(path.clone()).expect("utf8 temp path");
+        write_gaussian_ply(&utf8_path, &map).unwrap();
+
+        let bytes = fs::read(&path).unwrap();
+        let header_end = bytes
+            .windows(b"end_header\n".len())
+            .position(|window| window == b"end_header\n")
+            .expect("header terminator")
+            + b"end_header\n".len();
+        let header = String::from_utf8_lossy(&bytes[..header_end]);
+        assert!(header.starts_with("ply\n"));
+        assert!(header.contains("format binary_little_endian 1.0"));
+        for field in ["f_dc_0", "opacity", "scale_0", "rot_3"] {
+            assert!(header.contains(field), "missing 3DGS field {field}");
+        }
+        let vertex_count: usize = header
+            .lines()
+            .find(|line| line.starts_with("element vertex"))
+            .and_then(|line| line.split_whitespace().nth(2))
+            .and_then(|value| value.parse().ok())
+            .expect("vertex count");
+        assert_eq!(
+            vertex_count,
+            map.surfels().filter(|surfel| surfel.parent.is_none()).count()
+        );
+        assert_eq!(bytes.len() - header_end, vertex_count * GAUSSIAN_PLY_FIELDS * 4);
+        fs::remove_file(&path).ok();
     }
 }
