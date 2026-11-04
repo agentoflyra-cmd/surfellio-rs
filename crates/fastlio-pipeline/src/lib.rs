@@ -306,8 +306,13 @@ impl MainPipeline {
         self.filter.state = predict_state;
         self.filter.covariance = predict_covariance;
 
+        let frame_time_sec = group.lidar.end_timestamp_sec();
         deskew(&mut group.lidar, &segments, &self.extrinsic)?;
         let pointcloud = preprocess(&self.config.preprocess, group.lidar)?;
+
+        // Surfel creation/refit timestamps and the age-dependent association
+        // drift prior are evaluated against the current frame time.
+        self.map.set_time(frame_time_sec);
 
         let tracking = if !self.map.is_empty() {
             let summary = self

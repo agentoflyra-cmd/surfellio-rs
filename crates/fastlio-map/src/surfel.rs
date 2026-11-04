@@ -17,6 +17,8 @@ pub struct SurfelMap {
     pub(super) surfels: SlotMap<SurfelID, Surfel>,
     surfel_map_config: SurfelMapConfig,
     surfel_config: SurfelConfig,
+    /// Current frame timestamp (s), set by the pipeline once per frame.
+    time_sec: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +134,14 @@ impl SurfelMap {
             surfels,
             surfel_map_config: map_config,
             surfel_config,
+            time_sec: 0.0,
         }
+    }
+
+    /// Set the timestamp (s) of the frame currently being processed. Surfel
+    /// creation/refit and the association drift age are evaluated against it.
+    pub fn set_time(&mut self, time_sec: f64) {
+        self.time_sec = time_sec;
     }
 
     pub fn query_plane(&self, point: &PointXYZI) -> Result<Option<SurfelPlaneObservation>> {
@@ -344,8 +353,9 @@ impl SurfelMap {
             if surfel.is_growing(self.surfel_config.min_mature_surfel_count) || surfel.count < 2 {
                 continue;
             }
+            let age_sec = (self.time_sec - surfel.last_refit_time_sec).max(0.0);
             let Some((_, plane_covariance, score)) =
-                surfel.surfel_score(point, &point_w_covariance, &self.surfel_config)
+                surfel.surfel_score(point, &point_w_covariance, &self.surfel_config, age_sec)
             else {
                 continue;
             };
@@ -446,7 +456,8 @@ impl SurfelMap {
     }
 
     fn create_surfel(&mut self, point: &PointXYZI) -> Result<SurfelID> {
-        let surfel = Surfel::from_first_point(point);
+        let mut surfel = Surfel::from_first_point(point);
+        surfel.last_refit_time_sec = self.time_sec;
         let id = self.surfels.insert(surfel);
         self.reindex_surfel(id)?;
         Ok(id)
@@ -487,6 +498,7 @@ impl SurfelMap {
                 Mat3::from_columns(&[eigen_pair[0].1, eigen_pair[1].1, eigen_pair[2].1]);
             surfel.eigenvalues = Vec3::new(eigen_pair[0].0, eigen_pair[1].0, eigen_pair[2].0);
             surfel.last_refit = surfel.count;
+            surfel.last_refit_time_sec = self.time_sec;
             needs_reindex = true;
         }
 

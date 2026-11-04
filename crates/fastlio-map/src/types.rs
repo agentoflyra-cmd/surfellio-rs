@@ -89,6 +89,10 @@ pub struct Surfel {
 
     pub count: usize,
     pub last_refit: usize,
+    /// Timestamp (s) of the last plane refit / creation. Association drift grows
+    /// with the time since this anchor, because the pose that anchored the surfel
+    /// may have drifted since then.
+    pub last_refit_time_sec: f64,
     pub indexed_voxels: SmallVec<[u64; 8]>,
 }
 
@@ -105,6 +109,7 @@ impl Surfel {
             m2,
             count: 1,
             last_refit: 0,
+            last_refit_time_sec: 0.0,
             indexed_voxels: SmallVec::new(),
         }
     }
@@ -175,11 +180,22 @@ impl Surfel {
     /// The support-domain test rejects points whose tangential projection
     /// falls outside the surfel's bounded patch, so an infinite-plane
     /// extrapolation is never accepted.
+    /// Association drift prior: the gate widens with the time since the surfel
+    /// was last anchored by a refit, because the anchoring pose may have
+    /// drifted. `base` is the floor, `rate` the growth in m/s and `max` the cap.
+    pub(crate) fn association_drift_sigma(age_sec: f64, config: &SurfelConfig) -> f64 {
+        let base = config.association_map_drift_sigma as f64;
+        let rate = config.association_drift_rate as f64;
+        let max = config.association_drift_max as f64;
+        (base + rate * age_sec.max(0.0)).clamp(0.0, max.max(0.0))
+    }
+
     pub fn surfel_score(
         &self,
         point_w: &PointXYZI,
         point_w_variance: &Mat3<f64>,
         config: &SurfelConfig,
+        age_sec: f64,
     ) -> Option<(Mat3<f64>, Mat3<f64>, f64)> {
         let delta = point_w.to_vec3_f64() - self.mean_w;
         let e0 = self.eigenvectors.column(0);
@@ -220,8 +236,10 @@ impl Surfel {
         let plane = e0 * e0.transpose() * (normal_spread / count)
             + (e1 * e1.transpose() + e2 * e2.transpose()) * (lever_arm * angular_variance);
 
-        // Association gate covariance: fit covariance + map-drift prior.
-        let drift_sigma = config.association_map_drift_sigma as f64;
+        // Association gate covariance: fit covariance + drift prior. The drift
+        // prior grows with the age since the last refit, so stale/indoor
+        // surfaces get a wider gate while freshly anchored ones stay tight.
+        let drift_sigma = Self::association_drift_sigma(age_sec, config);
         let gate_covariance = geometric
             + plane
             + point_w_variance
@@ -317,4 +335,78 @@ impl Surfel {
     //     self.m2 += rhs.m2 + delta * delta.transpose() * (na * nb / n) as f64;
     //     self.count += rhs.count;
     // }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn drift_config() -> SurfelConfig {
+        SurfelConfig {
+            association_map_drift_sigma: 0.05,
+            association_drift_rate: 0.01,
+            association_drift_max: 1.0,
+            ..SurfelConfig::default()
+        }
+    }
+
+    #[test]
+    fn drift_sigma_is_base_plus_rate_times_age() {
+        let config = drift_config();
+        assert!((Surfel::association_drift_sigma(0.0, &config) - 0.05).abs() < 1e-6);
+        assert!((Surfel::association_drift_sigma(10.0, &config) - 0.15).abs() < 1e-6);
+    }
+
+    #[test]
+    fn drift_sigma_is_capped_and_ignores_negative_age() {
+        let config = SurfelConfig {
+            association_map_drift_sigma: 0.05,
+            association_drift_rate: 0.01,
+            association_drift_max: 0.20,
+            ..SurfelConfig::default()
+        };
+        assert!((Surfel::association_drift_sigma(-5.0, &config) - 0.05).abs() < 1e-6);
+        assert!((Surfel::association_drift_sigma(1000.0, &config) - 0.20).abs() < 1e-6);
+    }
+
+    #[test]
+    fn surfel_score_widens_gate_with_age() {
+        let mut surfel = Surfel::from_first_point(&PointXYZI {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            intensity: 0.0,
+        });
+        // 1 cm thick, wide patch: the query point is inside the support domain.
+        surfel.eigenvalues = Vec3::new(1e-4, 1.0, 1.0);
+        surfel.eigenvectors = Mat3::identity();
+        surfel.count = 32;
+
+        let config = SurfelConfig {
+            association_map_drift_sigma: 0.0,
+            association_drift_rate: 0.01,
+            association_drift_max: 1.0,
+            ..SurfelConfig::default()
+        };
+        let point = PointXYZI {
+            x: 0.0,
+            y: 0.0,
+            z: 0.2,
+            intensity: 0.0,
+        };
+        let point_covariance = Mat3::identity() * 1e-4;
+
+        let fresh = surfel
+            .surfel_score(&point, &point_covariance, &config, 0.0)
+            .unwrap()
+            .2;
+        let stale = surfel
+            .surfel_score(&point, &point_covariance, &config, 60.0)
+            .unwrap()
+            .2;
+        assert!(
+            stale < fresh,
+            "stale surfels must have a wider gate: fresh={fresh} stale={stale}"
+        );
+    }
 }

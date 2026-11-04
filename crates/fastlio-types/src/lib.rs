@@ -127,6 +127,13 @@ pub struct SurfelConfig {
     /// constraints and can make the filter diverge. 0 disables the term.
     #[serde(default = "default_association_map_drift_sigma")]
     pub association_map_drift_sigma: f32,
+    /// Growth rate (m/s) of the per-surfel association drift prior: a surfel
+    /// that was last anchored by a refit `age` seconds ago gets
+    /// `association_map_drift_sigma + rate * age` (capped by
+    /// `association_drift_max`). 0 makes the drift prior constant.
+    pub association_drift_rate: f32,
+    /// Upper bound (m) of the age-dependent association drift prior.
+    pub association_drift_max: f32,
     pub min_linearity: f32,
     pub min_line_spread_eigenvalue: f32,
     pub min_scattering: f32,
@@ -145,6 +152,8 @@ impl Default for SurfelConfig {
             association_covariance_eigenvalue_floor:
                 default_association_covariance_eigenvalue_floor(),
             association_map_drift_sigma: default_association_map_drift_sigma(),
+            association_drift_rate: 0.0,
+            association_drift_max: 1.0,
             min_linearity: 0.70,
             min_line_spread_eigenvalue: 0.0025,
             min_scattering: 0.60,
