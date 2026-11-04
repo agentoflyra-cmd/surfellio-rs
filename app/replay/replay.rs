@@ -497,7 +497,38 @@ fn main() -> Result<()> {
         "  association ratio: last {:.3}, mean {:.3}",
         pipeline.last_observation_ratio, pipeline.mean_observation_ratio
     );
+    print_density_histogram(&pipeline.map);
     Ok(())
+}
+
+/// Report the per-point local surfel density distribution (diagnostic for the
+/// density-gated drift prior).
+fn print_density_histogram(map: &SurfelMap) {
+    let hist = map.density_histogram();
+    let total: u64 = hist.iter().map(|&count| count as u64).sum();
+    if total == 0 {
+        return;
+    }
+    let mut cumulative = 0u64;
+    let (mut p10, mut p50, mut p90) = (None, None, None);
+    for (value, &count) in hist.iter().enumerate() {
+        cumulative += count as u64;
+        if p10.is_none() && cumulative * 10 >= total {
+            p10 = Some(value);
+        }
+        if p50.is_none() && cumulative * 2 >= total {
+            p50 = Some(value);
+        }
+        if p90.is_none() && cumulative * 10 >= total * 9 {
+            p90 = Some(value);
+        }
+    }
+    println!(
+        "  local surfel density: p10={} p50={} p90={} samples={total}",
+        p10.unwrap_or(0),
+        p50.unwrap_or(0),
+        p90.unwrap_or(0)
+    );
 }
 
 #[cfg(test)]

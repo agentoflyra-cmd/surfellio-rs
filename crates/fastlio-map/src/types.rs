@@ -206,6 +206,20 @@ impl Surfel {
         ((max_range - range) / max_range).clamp(0.0, 1.0)
     }
 
+    /// Local map density scale for the drift prior: a dense neighbourhood (many
+    /// surfels within `association_drift_density_radius`, i.e. close-range
+    /// indoor scenes) keeps the full prior; a sparse long-range neighbourhood
+    /// gets none, because there a loose gate picks wrong distant surfels.
+    /// `high <= low` disables the density gating (always 1).
+    pub(crate) fn drift_density_scale(local_surfels: usize, config: &SurfelConfig) -> f64 {
+        let low = config.association_drift_density_low as f64;
+        let high = config.association_drift_density_high as f64;
+        if high <= low {
+            return 1.0;
+        }
+        ((local_surfels as f64 - low) / (high - low)).clamp(0.0, 1.0)
+    }
+
     pub fn surfel_score(
         &self,
         point_w: &PointXYZI,
@@ -384,6 +398,26 @@ mod tests {
         };
         assert!((Surfel::association_drift_sigma(-5.0, &config) - 0.05).abs() < 1e-6);
         assert!((Surfel::association_drift_sigma(1000.0, &config) - 0.20).abs() < 1e-6);
+    }
+
+    #[test]
+    fn density_scale_enables_drift_only_in_dense_maps() {
+        let config = SurfelConfig {
+            association_drift_density_low: 5.0,
+            association_drift_density_high: 30.0,
+            ..SurfelConfig::default()
+        };
+        // Sparse long-range neighbourhood: drift disabled.
+        assert_eq!(Surfel::drift_density_scale(1, &config), 0.0);
+        assert_eq!(Surfel::drift_density_scale(5, &config), 0.0);
+        // Mid-density: linear ramp.
+        assert!((Surfel::drift_density_scale(17, &config) - 0.48).abs() < 1e-6);
+        // Dense close-range neighbourhood: full drift prior.
+        assert_eq!(Surfel::drift_density_scale(30, &config), 1.0);
+        assert_eq!(Surfel::drift_density_scale(500, &config), 1.0);
+        // Disabled when high <= low.
+        let disabled = SurfelConfig::default();
+        assert_eq!(Surfel::drift_density_scale(0, &disabled), 1.0);
     }
 
     #[test]

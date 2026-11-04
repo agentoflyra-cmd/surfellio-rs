@@ -5,6 +5,7 @@ use fastlio_types::{Mat3, PointXYZI, SurfelConfig, SurfelMapConfig, Vec3};
 use hashbrown::{HashMap, HashSet};
 use slotmap::{SlotMap, new_key_type};
 use smallvec::SmallVec;
+use std::cell::RefCell;
 
 new_key_type! {pub struct SurfelID;}
 
@@ -21,6 +22,8 @@ pub struct SurfelMap {
     time_sec: f64,
     /// Current sensor position in world (m), set by the pipeline once per frame.
     sensor_position_w: Vec3<f64>,
+    /// Diagnostic histogram of the per-point local surfel density (capped).
+    density_hist: RefCell<Vec<u32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -138,7 +141,14 @@ impl SurfelMap {
             surfel_config,
             time_sec: 0.0,
             sensor_position_w: Vec3::zeros(),
+            density_hist: RefCell::new(vec![0; 128]),
         }
+    }
+
+    /// Copy of the local-density histogram accumulated since map creation
+    /// (diagnostic; index is the surfel count, capped at 127).
+    pub fn density_histogram(&self) -> Vec<u32> {
+        self.density_hist.borrow().clone()
     }
 
     /// Set the timestamp (s) of the frame currently being processed. Surfel
@@ -323,6 +333,46 @@ impl SurfelMap {
         }
     }
 
+    /// Number of surfel means within `association_drift_density_radius` of the
+    /// point, used to scale the association drift prior by local map density.
+    fn local_surfel_count(&self, point: &PointXYZI) -> Result<usize> {
+        let density_radius = self.surfel_config.association_drift_density_radius as f64;
+        if density_radius <= 0.0 {
+            return Ok(0);
+        }
+        let radius = self.surfel_map_config.search_radius;
+        let mut voxel_key = VoxelKey::new(point, self.surfel_map_config.voxel_size)?;
+        let x = voxel_key.x;
+        let y = voxel_key.y;
+        let z = voxel_key.z;
+        let point_w = point.to_vec3_f64();
+        let mut count = 0;
+        let mut seen = HashSet::new();
+        for vx in x - radius..=x + radius {
+            for vy in y - radius..=y + radius {
+                for vz in z - radius..=z + radius {
+                    voxel_key.x = vx;
+                    voxel_key.y = vy;
+                    voxel_key.z = vz;
+                    let Some(bucket) = self.buckets.get(&voxel_key.pack()) else {
+                        continue;
+                    };
+                    for id in bucket.iter().copied() {
+                        if !seen.insert(id) {
+                            continue;
+                        }
+                        if let Some(surfel) = self.surfels.get(id)
+                            && (surfel.mean_w - point_w).norm() <= density_radius
+                        {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(count)
+    }
+
     /// Collect association candidates whose gate score is below `score_cap`,
     /// sorted by score ascending. Support-domain and maturity filters are the
     /// same as [`Self::query_surfel`].
@@ -355,6 +405,12 @@ impl SurfelMap {
             .flat_map(|buckets| buckets.iter().copied())
             .filter_map(|id| self.surfels.get(id).map(|surfel| (id, surfel)));
 
+        let local_density = self.local_surfel_count(point)?;
+        {
+            let mut hist = self.density_hist.borrow_mut();
+            hist[local_density.min(127)] += 1;
+        }
+        let density_scale = Surfel::drift_density_scale(local_density, &self.surfel_config);
         let mut found = Vec::new();
         let mut seen = HashSet::new();
         for (id, surfel) in candidate_ids {
@@ -365,8 +421,11 @@ impl SurfelMap {
                 continue;
             }
             let age_sec = (self.time_sec - surfel.last_refit_time_sec).max(0.0);
-            let drift_scale =
-                Surfel::drift_range_scale(point, &self.sensor_position_w, &self.surfel_config);
+            let drift_scale = Surfel::drift_range_scale(
+                point,
+                &self.sensor_position_w,
+                &self.surfel_config,
+            ) * density_scale;
             let Some((_, plane_covariance, score)) = surfel.surfel_score(
                 point,
                 point_w_covariance,

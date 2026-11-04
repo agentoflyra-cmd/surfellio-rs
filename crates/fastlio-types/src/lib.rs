@@ -137,6 +137,15 @@ pub struct SurfelConfig {
     /// Range (m) beyond which the association drift prior fades out linearly to
     /// zero. Long-range returns keep a tight gate; 0 disables the range gating.
     pub association_drift_max_range: f32,
+    /// Neighbourhood radius (m) used to measure the local map density that
+    /// scales the drift prior.
+    pub association_drift_density_radius: f32,
+    /// Local surfel count at or below which the drift prior is disabled
+    /// (sparse long-range map, where a loose gate picks wrong surfels).
+    pub association_drift_density_low: f32,
+    /// Local surfel count at or above which the drift prior applies in full
+    /// (dense close-range map). `high <= low` disables density gating.
+    pub association_drift_density_high: f32,
     pub min_linearity: f32,
     pub min_line_spread_eigenvalue: f32,
     pub min_scattering: f32,
@@ -158,6 +167,9 @@ impl Default for SurfelConfig {
             association_drift_rate: 0.0,
             association_drift_max: 1.0,
             association_drift_max_range: 0.0,
+            association_drift_density_radius: 1.0,
+            association_drift_density_low: 0.0,
+            association_drift_density_high: 0.0,
             min_linearity: 0.70,
             min_line_spread_eigenvalue: 0.0025,
             min_scattering: 0.60,
