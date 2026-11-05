@@ -36,6 +36,8 @@ struct ReplayArgs {
     trajectory_path: Option<Utf8PathBuf>,
     surfel_map_path: Option<Utf8PathBuf>,
     gaussian_ply_path: Option<Utf8PathBuf>,
+    surfel_dump_path: Option<Utf8PathBuf>,
+    surfel_dump_stride: usize,
     revisit_mask_path: Option<Utf8PathBuf>,
     assoc_diag: bool,
     playback_rate: f64,
@@ -97,13 +99,15 @@ impl ReplayArgs {
     fn parse(args: &[String]) -> Result<Self> {
         if args.len() < 3 {
             bail!(
-                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>] [--assoc-diag] [--revisit-mask <mask.csv>]",
+                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>] [--surfel-dump <out.csv>] [--assoc-diag] [--revisit-mask <mask.csv>]",
                 args.first().map(String::as_str).unwrap_or("fastlio-replay")
             );
         }
         let mut storm_mode = false;
         let mut map_stats = false;
         let mut gaussian_ply_path = None;
+        let mut surfel_dump_path = None;
+        let mut surfel_dump_stride = 4usize;
         let mut revisit_mask_path = None;
         let mut assoc_diag = false;
         let mut positional = Vec::new();
@@ -115,6 +119,16 @@ impl ReplayArgs {
                 map_stats = true;
             } else if arg == "--assoc-diag" {
                 assoc_diag = true;
+            } else if arg == "--surfel-dump" {
+                let Some(path) = iter.next() else {
+                    bail!("--surfel-dump requires a CSV path");
+                };
+                surfel_dump_path = Some(Utf8PathBuf::from(path.as_str()));
+            } else if arg == "--surfel-dump-stride" {
+                let Some(value) = iter.next() else {
+                    bail!("--surfel-dump-stride requires a value");
+                };
+                surfel_dump_stride = value.parse::<usize>().unwrap_or(4).max(1);
             } else if arg == "--revisit-mask" {
                 let Some(path) = iter.next() else {
                     bail!("--revisit-mask requires a CSV path");
@@ -162,6 +176,8 @@ impl ReplayArgs {
                 .get(3)
                 .map(|path| Utf8PathBuf::from(path.as_str())),
             gaussian_ply_path,
+            surfel_dump_path,
+            surfel_dump_stride,
             revisit_mask_path,
             assoc_diag,
             playback_rate,
@@ -664,6 +680,44 @@ fn rotation_matrix_to_quaternion(rotation: &Mat3<f64>) -> [f64; 4] {
     [w / norm, x / norm, y / norm, z / norm]
 }
 
+/// Dump active surfels with their lifetime metadata for offline map-deformation
+/// experiments: position, plane normal, count and creation/last-observation
+/// times (epochs), sampled every `stride` surfels.
+fn write_surfel_dump(path: &Utf8PathBuf, map: &SurfelMap, stride: usize) -> Result<()> {
+    let file = File::create(path)
+        .with_context(|| format!("failed to create surfel dump `{path}`"))?;
+    let mut writer = BufWriter::new(file);
+    writeln!(
+        writer,
+        "x,y,z,nx,ny,nz,count,created_time_sec,last_observed_time_sec"
+    )?;
+    let stride = stride.max(1);
+    let mut written = 0usize;
+    for (index, surfel) in map.surfels().enumerate() {
+        if surfel.parent.is_some() || index % stride != 0 {
+            continue;
+        }
+        let normal = surfel.eigenvectors.column(0);
+        writeln!(
+            writer,
+            "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6}",
+            surfel.mean_w.x,
+            surfel.mean_w.y,
+            surfel.mean_w.z,
+            normal.x,
+            normal.y,
+            normal.z,
+            surfel.count,
+            surfel.created_time_sec,
+            surfel.last_observed_time_sec
+        )?;
+        written += 1;
+    }
+    writer.flush()?;
+    println!("surfel dump: {written} surfels -> {path}");
+    Ok(())
+}
+
 fn print_summary(stats: &ReplayStats, config: &ReplayConfig) {
     println!("replay complete");
     println!("  total messages: {}", stats.read.total_messages);
@@ -742,6 +796,9 @@ fn main() -> Result<()> {
     }
     if let Some(path) = &args.gaussian_ply_path {
         write_gaussian_ply(path, &pipeline.map)?;
+    }
+    if let Some(path) = &args.surfel_dump_path {
+        write_surfel_dump(path, &pipeline.map, args.surfel_dump_stride)?;
     }
     print_summary(&stats, &replay_config);
     if args.map_stats {
