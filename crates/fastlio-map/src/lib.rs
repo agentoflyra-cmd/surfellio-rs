@@ -1774,4 +1774,49 @@ mod surfel_test {
         assert_eq!(stats.deleted, 1, "stale growing fragment must be deleted");
         assert!(map.is_empty());
     }
+
+    #[test]
+    fn assoc_diag_classifies_failed_queries_with_wide_probe() {
+        let mut map = SurfelMap::new(
+            SurfelMapConfig {
+                voxel_size: 0.5,
+                search_radius: 0,
+            },
+            SurfelConfig {
+                min_mature_surfel_count: 4,
+                ..SurfelConfig::default()
+            },
+        );
+        let mut points = Vec::new();
+        for i in 0..4 {
+            for j in 0..2 {
+                points.push(pt(0.05 * i as f32, 0.05 * j as f32, 0.0));
+            }
+        }
+        map.insert(points.into_iter()).unwrap();
+        map.set_assoc_diag_enabled(true);
+        map.set_assoc_diag_revisit(true);
+
+        let covariance = Mat3::identity() * 0.03_f64.powi(2);
+        // Build a drifted query that the default gate rejects but the wide,
+        // relaxed probe can accept.
+        let query = pt(0.4, 0.0, 0.0);
+        for _ in 0..8 {
+            assert!(map.query_surfel(&query, covariance).unwrap().is_none());
+        }
+        let diag = map.assoc_diag_snapshot();
+        assert_eq!(diag.revisit.queries, 8);
+        assert_eq!(diag.revisit.accepted, 0);
+        assert_eq!(diag.normal.queries, 0);
+        assert_eq!(
+            diag.revisit.no_candidate + diag.revisit.gate_rejected,
+            8,
+            "every failure must be classified"
+        );
+        assert_eq!(diag.revisit.probes, 1, "first failed query is sampled");
+        assert_eq!(
+            diag.revisit.probe_accepted, 1,
+            "wide relaxed probe must recall the drifted surfel"
+        );
+    }
 }

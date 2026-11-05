@@ -5,12 +5,41 @@ use fastlio_types::{Mat3, PointXYZI, SurfelConfig, SurfelMapConfig, Vec3};
 use hashbrown::{HashMap, HashSet};
 use slotmap::SlotMap;
 use smallvec::SmallVec;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 
 pub use crate::types::SurfelID;
 
 const LINE_SECOND_BEST_MIN_DISTANCE_MARGIN: f64 = 0.05;
 const LINE_SECOND_BEST_MAX_DISTANCE_RATIO: f64 = 0.70;
+
+/// Index of a |point-to-plane| residual (m) in the 8-bin diagnostic histogram.
+fn residual_bin(residual: f64) -> usize {
+    match residual {
+        r if r < 0.005 => 0,
+        r if r < 0.010 => 1,
+        r if r < 0.020 => 2,
+        r if r < 0.050 => 3,
+        r if r < 0.100 => 4,
+        r if r < 0.200 => 5,
+        r if r < 0.500 => 6,
+        _ => 7,
+    }
+}
+
+/// Index of a whitened `best_score` in the 8-bin diagnostic histogram.
+fn score_bin(score: f64) -> usize {
+    match score {
+        s if s < 0.25 => 0,
+        s if s < 0.5 => 1,
+        s if s < 1.0 => 2,
+        s if s < 2.0 => 3,
+        s if s < 4.0 => 4,
+        s if s < 8.0 => 5,
+        s if s < 16.0 => 6,
+        _ => 7,
+    }
+}
 
 #[derive(Default)]
 pub struct SurfelMap {
@@ -31,6 +60,45 @@ pub struct SurfelMap {
     gc_cursor: usize,
     compacted_total: usize,
     deleted_total: usize,
+    /// Association-recall diagnostics (behaviour-neutral; only reads the map).
+    assoc_diag: RefCell<AssocDiagSnapshot>,
+    diag_query_index: Cell<u64>,
+    diag_frame_probes: Cell<usize>,
+    diag_enabled: bool,
+    diag_revisit: bool,
+}
+
+/// Counters for one association-recall class (normal frames / revisit frames).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AssocDiagCounters {
+    pub queries: u64,
+    pub accepted: u64,
+    /// No surfel at all in the default search neighbourhood.
+    pub no_candidate: u64,
+    /// A surfel exists in the default neighbourhood but the gate/support rejects it.
+    pub gate_rejected: u64,
+    /// Sampled failed queries probed with a wide search (5 voxels, 6x gate).
+    pub probes: u64,
+    /// Wide probe found an acceptable surfel: recall/gate was the bottleneck.
+    pub probe_accepted: u64,
+    /// Wide probe found candidates but even the relaxed gate rejects them.
+    pub probe_rejected: u64,
+    /// Wide probe found no surfel within the drift envelope: map coverage issue.
+    pub probe_none: u64,
+    /// Sum of |point-to-plane residual| over accepted associations (m).
+    pub plane_residual_sum: f64,
+    /// Histogram of the whitened score `best_score` for accepted associations:
+    /// bins [0,0.25), [0.25,0.5), [0.5,1), [1,2), [2,4), [4,8), [8,16), [16,inf).
+    pub score_hist: [u64; 8],
+    /// Histogram of |point-to-plane residual| (m) for accepted associations:
+    /// bins [0,5mm), [5,10mm), [10,20mm), [20,50mm), [50,100mm), [0.1,0.2m), [0.2,0.5m), [0.5m,inf).
+    pub residual_hist: [u64; 8],
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AssocDiagSnapshot {
+    pub normal: AssocDiagCounters,
+    pub revisit: AssocDiagCounters,
 }
 
 /// Result of one deferred map-maintenance step (diagnostic).
@@ -181,7 +249,28 @@ impl SurfelMap {
             gc_cursor: 0,
             compacted_total: 0,
             deleted_total: 0,
+            assoc_diag: RefCell::new(AssocDiagSnapshot::default()),
+            diag_query_index: Cell::new(0),
+            diag_frame_probes: Cell::new(0),
+            diag_enabled: false,
+            diag_revisit: false,
         }
+    }
+
+    /// Enable/disable association-recall diagnostics (off by default; the flag
+    /// only adds counters and sampled read-only probes).
+    pub fn set_assoc_diag_enabled(&mut self, enabled: bool) {
+        self.diag_enabled = enabled;
+    }
+
+    /// Mark whether the current frame belongs to a revisit region.
+    pub fn set_assoc_diag_revisit(&mut self, revisit: bool) {
+        self.diag_revisit = revisit;
+        self.diag_frame_probes.set(0);
+    }
+
+    pub fn assoc_diag_snapshot(&self) -> AssocDiagSnapshot {
+        *self.assoc_diag.borrow()
     }
 
     /// Set the timestamp (s) of the frame currently being processed.
@@ -382,16 +471,20 @@ impl SurfelMap {
         }
     }
 
-    pub fn query_surfel(
+    /// Core association: find the best surfel within `radius_extra` additional
+    /// voxels, using `config` for the gate/support thresholds.
+    fn query_surfel_with(
         &self,
         point: &PointXYZI,
         point_w_covariance: Mat3<f64>,
-    ) -> Result<Option<SurfelObservation>> {
-        let radius = self.surfel_map_config.search_radius;
+        radius_extra: i32,
+        config: &SurfelConfig,
+    ) -> Option<SurfelObservation> {
         if !point.is_valid() {
-            return Ok(None);
+            return None;
         }
-        let mut voxel_key = VoxelKey::new(point, self.surfel_map_config.voxel_size)?;
+        let radius = (self.surfel_map_config.search_radius + radius_extra).max(0);
+        let mut voxel_key = VoxelKey::new(point, self.surfel_map_config.voxel_size).ok()?;
         let x = voxel_key.x;
         let y = voxel_key.y;
         let z = voxel_key.z;
@@ -409,8 +502,8 @@ impl SurfelMap {
             .filter_map(|v| self.buckets.get(&v))
             .flat_map(|buckets| buckets.iter().copied());
 
-        let min_mature = self.surfel_config.min_mature_surfel_count;
-        let grossing_weight = self.surfel_config.growing_association_weight;
+        let min_mature = config.min_mature_surfel_count;
+        let grossing_weight = config.growing_association_weight;
         let mut best: Option<(SurfelID, f64)> = None;
         let mut second_best: Option<(SurfelID, f64)> = None;
         let mut seen_roots = HashSet::new();
@@ -431,10 +524,10 @@ impl SurfelMap {
             if growing && grossing_weight <= 0.0 {
                 continue;
             }
-            let Some((_, _, score)) = surfel.surfel_score(point, &point_w_covariance, &self.surfel_config) else {
+            let Some((_, _, score)) = surfel.surfel_score(point, &point_w_covariance, config) else {
                 continue;
             };
-            if score > self.surfel_config.max_mahalanobis_distance.powi(2) as f64 {
+            if score > config.max_mahalanobis_distance.powi(2) as f64 {
                 continue;
             }
 
@@ -455,7 +548,7 @@ impl SurfelMap {
             } else {
                 1.0
             };
-            Ok(Some(SurfelObservation {
+            Some(SurfelObservation {
                 surfel_id: best_id,
                 mean_w: surfel.mean_w,
                 covariance_w: surfel.m2 / (surfel.count - 1) as f64,
@@ -464,9 +557,110 @@ impl SurfelMap {
                 best_score,
                 second_best_score: second_best.map(|(_, score)| score),
                 confidence,
-            }))
+            })
         } else {
-            Ok(None)
+            None
+        }
+    }
+
+    pub fn query_surfel(
+        &self,
+        point: &PointXYZI,
+        point_w_covariance: Mat3<f64>,
+    ) -> Result<Option<SurfelObservation>> {
+        let result = self.query_surfel_with(point, point_w_covariance, 0, &self.surfel_config);
+        if self.diag_enabled {
+            self.record_assoc_diag(point, point_w_covariance, &result);
+        }
+        Ok(result)
+    }
+
+    /// True when any root is indexed in the search neighbourhood of `point`.
+    fn has_candidate_with(&self, point: &PointXYZI, radius_extra: i32) -> bool {
+        if !point.is_valid() {
+            return false;
+        }
+        let Ok(mut voxel_key) = VoxelKey::new(point, self.surfel_map_config.voxel_size) else {
+            return false;
+        };
+        let radius = (self.surfel_map_config.search_radius + radius_extra).max(0);
+        let x = voxel_key.x;
+        let y = voxel_key.y;
+        let z = voxel_key.z;
+        for vx in x - radius..=x + radius {
+            for vy in y - radius..=y + radius {
+                for vz in z - radius..=z + radius {
+                    voxel_key.x = vx;
+                    voxel_key.y = vy;
+                    voxel_key.z = vz;
+                    let Some(bucket) = self.buckets.get(&voxel_key.pack()) else {
+                        continue;
+                    };
+                    for id in bucket.iter().copied() {
+                        let (root, _) = self.resolve_root(id);
+                        if self.surfels.get(root).is_some_and(|surfel| surfel.count >= 2) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Record one association outcome and probe sampled failures with a wide,
+    /// relaxed search to classify why association failed.
+    fn record_assoc_diag(
+        &self,
+        point: &PointXYZI,
+        point_w_covariance: Mat3<f64>,
+        result: &Option<SurfelObservation>,
+    ) {
+        let index = self.diag_query_index.get();
+        self.diag_query_index.set(index.wrapping_add(1));
+        let mut snapshot = self.assoc_diag.borrow_mut();
+        let counters = if self.diag_revisit {
+            &mut snapshot.revisit
+        } else {
+            &mut snapshot.normal
+        };
+        counters.queries += 1;
+        if let Some(observation) = result {
+            counters.accepted += 1;
+            // Residual and score distribution of accepted associations: a
+            // revisit region with drifted poses should show larger residuals
+            // than normal tracking frames.
+            let normal = observation.eigenvectors.column(0);
+            let residual = normal
+                .dot(&(point.to_vec3_f64() - observation.mean_w))
+                .abs();
+            counters.plane_residual_sum += residual;
+            counters.residual_hist[residual_bin(residual)] += 1;
+            counters.score_hist[score_bin(observation.best_score)] += 1;
+            return;
+        }
+        if self.has_candidate_with(point, 0) {
+            counters.gate_rejected += 1;
+        } else {
+            counters.no_candidate += 1;
+        }
+        // Sampled wide probe: every 64th failed query, at most 4 per frame.
+        if index % 64 != 0 || self.diag_frame_probes.get() >= 4 {
+            return;
+        }
+        self.diag_frame_probes.set(self.diag_frame_probes.get() + 1);
+        counters.probes += 1;
+        let mut relaxed = self.surfel_config.clone();
+        relaxed.max_mahalanobis_distance *= 6.0;
+        if self
+            .query_surfel_with(point, point_w_covariance, 5, &relaxed)
+            .is_some()
+        {
+            counters.probe_accepted += 1;
+        } else if self.has_candidate_with(point, 5) {
+            counters.probe_rejected += 1;
+        } else {
+            counters.probe_none += 1;
         }
     }
 

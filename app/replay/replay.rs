@@ -36,23 +36,76 @@ struct ReplayArgs {
     trajectory_path: Option<Utf8PathBuf>,
     surfel_map_path: Option<Utf8PathBuf>,
     gaussian_ply_path: Option<Utf8PathBuf>,
+    revisit_mask_path: Option<Utf8PathBuf>,
+    assoc_diag: bool,
     playback_rate: f64,
     channel_capacity: usize,
     storm_mode: bool,
     map_stats: bool,
 }
 
+/// Timestamp labels of revisit-region frames, used only to split diagnostics.
+#[derive(Default)]
+struct RevisitLabels {
+    timestamps: Vec<f64>,
+    cursor: usize,
+}
+
+impl RevisitLabels {
+    fn load(path: &Utf8PathBuf) -> Result<Self> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read revisit mask `{path}`"))?;
+        let mut timestamps = Vec::new();
+        for (line_number, line) in text.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let first = line.split(',').next().unwrap_or("").trim();
+            let Ok(timestamp) = first.parse::<f64>() else {
+                if line_number == 0 {
+                    continue; // header
+                }
+                bail!("revisit mask line {}: invalid timestamp", line_number + 1);
+            };
+            timestamps.push(timestamp);
+        }
+        timestamps.sort_by(|a, b| a.total_cmp(b));
+        Ok(Self {
+            timestamps,
+            cursor: 0,
+        })
+    }
+
+    fn is_revisit(&mut self, timestamp_sec: f64) -> bool {
+        while self.cursor < self.timestamps.len()
+            && self.timestamps[self.cursor] < timestamp_sec - 1e-6
+        {
+            self.cursor += 1;
+        }
+        if let Some(&t) = self.timestamps.get(self.cursor) {
+            if (t - timestamp_sec).abs() <= 1e-6 {
+                self.cursor += 1;
+                return true;
+            }
+        }
+        false
+    }
+}
+
 impl ReplayArgs {
     fn parse(args: &[String]) -> Result<Self> {
         if args.len() < 3 {
             bail!(
-                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>]",
+                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>] [--assoc-diag] [--revisit-mask <mask.csv>]",
                 args.first().map(String::as_str).unwrap_or("fastlio-replay")
             );
         }
         let mut storm_mode = false;
         let mut map_stats = false;
         let mut gaussian_ply_path = None;
+        let mut revisit_mask_path = None;
+        let mut assoc_diag = false;
         let mut positional = Vec::new();
         let mut iter = args[3..].iter();
         while let Some(arg) = iter.next() {
@@ -60,6 +113,13 @@ impl ReplayArgs {
                 storm_mode = true;
             } else if arg == "--map-stats" {
                 map_stats = true;
+            } else if arg == "--assoc-diag" {
+                assoc_diag = true;
+            } else if arg == "--revisit-mask" {
+                let Some(path) = iter.next() else {
+                    bail!("--revisit-mask requires a CSV path");
+                };
+                revisit_mask_path = Some(Utf8PathBuf::from(path.as_str()));
             } else if arg == "--gaussian-ply" {
                 let Some(path) = iter.next() else {
                     bail!("--gaussian-ply requires an output path");
@@ -102,6 +162,8 @@ impl ReplayArgs {
                 .get(3)
                 .map(|path| Utf8PathBuf::from(path.as_str())),
             gaussian_ply_path,
+            revisit_mask_path,
+            assoc_diag,
             playback_rate,
             channel_capacity,
             storm_mode,
@@ -244,6 +306,7 @@ fn process_ready_groups(
     synchronizer: &mut MeasurementSynchronizer,
     pipeline: &mut MainPipeline,
     stats: &mut ReplayStats,
+    revisit_labels: &mut RevisitLabels,
 ) {
     for group in synchronizer.drain_ready() {
         stats.synchronized_groups += 1;
@@ -270,6 +333,9 @@ fn process_ready_groups(
             .filter(|pair| pair[1].offset_time_sec < pair[0].offset_time_sec)
             .count();
         let frame_start = Instant::now();
+        pipeline
+            .map
+            .set_assoc_diag_revisit(revisit_labels.is_revisit(timestamp_sec));
         let result = pipeline.process_measure_group(group);
         stats
             .frame_durations_ms
@@ -303,6 +369,7 @@ fn receive_events(
     synchronizer: &mut MeasurementSynchronizer,
     pipeline: &mut MainPipeline,
     config: &ReplayConfig,
+    revisit_labels: &mut RevisitLabels,
 ) -> Result<ReplayStats> {
     let mut stats = ReplayStats::default();
     let mut clock = PlaybackClock::new(if config.storm_mode {
@@ -320,10 +387,10 @@ fn receive_events(
                 }
                 stats.max_pending_lidar =
                     stats.max_pending_lidar.max(synchronizer.lidar_buffer.len());
-                process_ready_groups(synchronizer, pipeline, &mut stats);
+                process_ready_groups(synchronizer, pipeline, &mut stats, revisit_labels);
             }
             Some(ReplayMessage::Finished(result)) => {
-                process_ready_groups(synchronizer, pipeline, &mut stats);
+                process_ready_groups(synchronizer, pipeline, &mut stats, revisit_labels);
                 stats.read = result.map_err(anyhow::Error::msg)?;
                 stats.dropped_lidar_before_first_imu = synchronizer.dropped_lidar_before_first_imu;
                 stats.pending_lidar_at_eof = synchronizer.lidar_buffer.len();
@@ -341,6 +408,7 @@ fn run_spsc(
     path: Utf8PathBuf,
     pipeline: &mut MainPipeline,
     config: ReplayConfig,
+    revisit_labels: &mut RevisitLabels,
 ) -> Result<ReplayStats> {
     let lidar_topic = pipeline.config.common.lid_topic.clone();
     let imu_topic = pipeline.config.common.imu_topic.clone();
@@ -366,6 +434,7 @@ fn run_spsc(
         &mut synchronizer,
         pipeline,
         &config,
+        revisit_labels,
     );
     consumer_alive.store(false, Ordering::Release);
     let producer_result = handle
@@ -652,7 +721,19 @@ fn main() -> Result<()> {
         storm_mode: args.storm_mode,
     };
     let mut pipeline = MainPipeline::new(pipeline_config);
-    let stats = run_spsc(args.bag_path, &mut pipeline, replay_config.clone())?;
+    pipeline
+        .map
+        .set_assoc_diag_enabled(args.assoc_diag);
+    let mut revisit_labels = match &args.revisit_mask_path {
+        Some(path) => RevisitLabels::load(path)?,
+        None => RevisitLabels::default(),
+    };
+    let stats = run_spsc(
+        args.bag_path,
+        &mut pipeline,
+        replay_config.clone(),
+        &mut revisit_labels,
+    )?;
     if let Some(path) = &args.trajectory_path {
         write_trajectory(path, &stats.trajectory)?;
     }
@@ -701,6 +782,50 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
         maintenance.compacted_total,
         maintenance.deleted_total
     );
+
+    let diag = map.assoc_diag_snapshot();
+    let print_diag = |label: &str, c: &fastlio_map::surfel::AssocDiagCounters| {
+        if c.queries == 0 {
+            return;
+        }
+        let accepted = c.accepted as f64 / c.queries as f64 * 100.0;
+        let no_candidate = c.no_candidate as f64 / c.queries as f64 * 100.0;
+        let gate = c.gate_rejected as f64 / c.queries as f64 * 100.0;
+        println!(
+            "  assoc diag [{label}]: queries={} accepted={:.2}% no_candidate={:.2}% gate_rejected={:.2}%",
+            c.queries, accepted, no_candidate, gate
+        );
+        if c.probes > 0 {
+            println!(
+                "    probes={} -> wide_accepted={} wide_rejected={} wide_none={}",
+                c.probes, c.probe_accepted, c.probe_rejected, c.probe_none
+            );
+        }
+        if c.accepted > 0 {
+            let accepted = c.accepted as f64;
+            let mean_residual_mm = c.plane_residual_sum / accepted * 1000.0;
+            let residual_pct: Vec<String> = c
+                .residual_hist
+                .iter()
+                .map(|&n| format!("{:.1}", n as f64 / accepted * 100.0))
+                .collect();
+            let score_pct: Vec<String> = c
+                .score_hist
+                .iter()
+                .map(|&n| format!("{:.1}", n as f64 / accepted * 100.0))
+                .collect();
+            println!(
+                "    accepted residual mean={mean_residual_mm:.2}mm hist[0-5,5-10,10-20,20-50,50-100,100-200,200-500,500+mm]%=[{}]",
+                residual_pct.join(",")
+            );
+            println!(
+                "    accepted score hist[0-.25,.25-.5,.5-1,1-2,2-4,4-8,8-16,16+]%=[{}]",
+                score_pct.join(",")
+            );
+        }
+    };
+    print_diag("normal", &diag.normal);
+    print_diag("revisit", &diag.revisit);
 
     if !stats.frame_durations_ms.is_empty() {
         let mut sorted = stats.frame_durations_ms.clone();
@@ -906,5 +1031,18 @@ mod tests {
         );
         assert_eq!(bytes.len() - header_end, vertex_count * GAUSSIAN_PLY_FIELDS * 4);
         fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn revisit_labels_match_timestamps_only() {
+        let mut labels = RevisitLabels {
+            timestamps: vec![1.0, 2.0],
+            cursor: 0,
+        };
+        assert!(!labels.is_revisit(0.5));
+        assert!(labels.is_revisit(1.0));
+        assert!(!labels.is_revisit(1.5));
+        assert!(labels.is_revisit(2.0));
+        assert!(!labels.is_revisit(3.0));
     }
 }
