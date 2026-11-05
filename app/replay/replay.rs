@@ -27,6 +27,7 @@ struct ReplayConfig {
     channel_capacity: usize,
     time_offset_lidar_to_imu_sec: f64,
     storm_mode: bool,
+    collect_state: bool,
 }
 
 #[derive(Debug)]
@@ -40,6 +41,7 @@ struct ReplayArgs {
     surfel_dump_stride: usize,
     keyframe_dir: Option<Utf8PathBuf>,
     keyframe_stride: usize,
+    state_dump_path: Option<Utf8PathBuf>,
     revisit_mask_path: Option<Utf8PathBuf>,
     assoc_diag: bool,
     playback_rate: f64,
@@ -101,7 +103,7 @@ impl ReplayArgs {
     fn parse(args: &[String]) -> Result<Self> {
         if args.len() < 3 {
             bail!(
-                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>] [--surfel-dump <out.csv>] [--keyframe-dir <dir>] [--assoc-diag] [--revisit-mask <mask.csv>]",
+                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>] [--surfel-dump <out.csv>] [--keyframe-dir <dir>] [--state-dump <csv>] [--assoc-diag] [--revisit-mask <mask.csv>]",
                 args.first().map(String::as_str).unwrap_or("fastlio-replay")
             );
         }
@@ -112,6 +114,7 @@ impl ReplayArgs {
         let mut surfel_dump_stride = 4usize;
         let mut keyframe_dir = None;
         let mut keyframe_stride = 20usize;
+        let mut state_dump_path = None;
         let mut revisit_mask_path = None;
         let mut assoc_diag = false;
         let mut positional = Vec::new();
@@ -128,6 +131,11 @@ impl ReplayArgs {
                     bail!("--surfel-dump requires a CSV path");
                 };
                 surfel_dump_path = Some(Utf8PathBuf::from(path.as_str()));
+            } else if arg == "--state-dump" {
+                let Some(path) = iter.next() else {
+                    bail!("--state-dump requires a CSV path");
+                };
+                state_dump_path = Some(Utf8PathBuf::from(path.as_str()));
             } else if arg == "--keyframe-dir" {
                 let Some(path) = iter.next() else {
                     bail!("--keyframe-dir requires a directory path");
@@ -194,6 +202,7 @@ impl ReplayArgs {
             surfel_dump_stride,
             keyframe_dir,
             keyframe_stride,
+            state_dump_path,
             revisit_mask_path,
             assoc_diag,
             playback_rate,
@@ -242,6 +251,15 @@ struct ReplayStats {
     trajectory: Vec<TrajectoryRow>,
     /// Wall-clock duration of each `process_measure_group` call (ms).
     frame_durations_ms: Vec<f64>,
+    /// Per-frame filter states for offline drift analysis.
+    state_rows: Vec<StateRow>,
+}
+
+#[derive(Clone)]
+struct StateRow {
+    timestamp_sec: f64,
+    state: NavState,
+    covariance_diag: [f64; 23],
 }
 
 struct ProducerAlive(Arc<AtomicBool>);
@@ -339,6 +357,7 @@ fn process_ready_groups(
     pipeline: &mut MainPipeline,
     stats: &mut ReplayStats,
     revisit_labels: &mut RevisitLabels,
+    config: &ReplayConfig,
 ) {
     for group in synchronizer.drain_ready() {
         stats.synchronized_groups += 1;
@@ -375,6 +394,17 @@ fn process_ready_groups(
         match result {
             Ok(frame_summary) => {
                 stats.processed_frames += 1;
+                if config.collect_state {
+                    let mut covariance_diag = [0.0_f64; 23];
+                    for (index, value) in covariance_diag.iter_mut().enumerate() {
+                        *value = pipeline.filter.covariance[(index, index)];
+                    }
+                    stats.state_rows.push(StateRow {
+                        timestamp_sec,
+                        state: pipeline.filter.state.clone(),
+                        covariance_diag,
+                    });
+                }
                 stats.trajectory.push(TrajectoryRow {
                     timestamp_sec,
                     state: pipeline.filter.state.clone(),
@@ -419,10 +449,10 @@ fn receive_events(
                 }
                 stats.max_pending_lidar =
                     stats.max_pending_lidar.max(synchronizer.lidar_buffer.len());
-                process_ready_groups(synchronizer, pipeline, &mut stats, revisit_labels);
+                process_ready_groups(synchronizer, pipeline, &mut stats, revisit_labels, config);
             }
             Some(ReplayMessage::Finished(result)) => {
-                process_ready_groups(synchronizer, pipeline, &mut stats, revisit_labels);
+                process_ready_groups(synchronizer, pipeline, &mut stats, revisit_labels, config);
                 stats.read = result.map_err(anyhow::Error::msg)?;
                 stats.dropped_lidar_before_first_imu = synchronizer.dropped_lidar_before_first_imu;
                 stats.pending_lidar_at_eof = synchronizer.lidar_buffer.len();
@@ -696,6 +726,38 @@ fn rotation_matrix_to_quaternion(rotation: &Mat3<f64>) -> [f64; 4] {
     [w / norm, x / norm, y / norm, z / norm]
 }
 
+/// Write per-frame filter states for offline z-drift analysis.
+fn write_state_dump(path: &Utf8PathBuf, rows: &[StateRow]) -> Result<()> {
+    let file = File::create(path)
+        .with_context(|| format!("failed to create state dump `{path}`"))?;
+    let mut writer = BufWriter::new(file);
+    writeln!(
+        writer,
+        "timestamp_sec,px,py,pz,qw,qx,qy,qz,vx,vy,vz,gx,gy,gz,bgx,bgy,bgz,bax,bay,baz,cov_px,cov_py,cov_pz,cov_vx,cov_vy,cov_vz,cov_gx,cov_gy,cov_bgx,cov_bgy,cov_bgz,cov_bax,cov_bay,cov_baz"
+    )?;
+    for row in rows {
+        let s = &row.state;
+        writeln!(
+            writer,
+            "{:.6},{:.6},{:.6},{:.6},{:.9},{:.9},{:.9},{:.9},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e}",
+            row.timestamp_sec,
+            s.position.x, s.position.y, s.position.z,
+            s.orientation.w, s.orientation.i, s.orientation.j, s.orientation.k,
+            s.velocity.x, s.velocity.y, s.velocity.z,
+            s.gravity.x, s.gravity.y, s.gravity.z,
+            s.gyro_bias.x, s.gyro_bias.y, s.gyro_bias.z,
+            s.accel_bias.x, s.accel_bias.y, s.accel_bias.z,
+            row.covariance_diag[0], row.covariance_diag[1], row.covariance_diag[2],
+            row.covariance_diag[3], row.covariance_diag[4], row.covariance_diag[5],
+            row.covariance_diag[6], row.covariance_diag[7],
+            row.covariance_diag[15], row.covariance_diag[16], row.covariance_diag[17],
+            row.covariance_diag[18], row.covariance_diag[19], row.covariance_diag[20]
+        )?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
 /// Dump active surfels with their lifetime metadata for offline map-deformation
 /// experiments: position, plane normal, count and creation/last-observation
 /// times (epochs), sampled every `stride` surfels.
@@ -789,6 +851,7 @@ fn main() -> Result<()> {
         channel_capacity: args.channel_capacity,
         time_offset_lidar_to_imu_sec: offset,
         storm_mode: args.storm_mode,
+        collect_state: args.state_dump_path.is_some(),
     };
     let mut pipeline = MainPipeline::new(pipeline_config);
     if let Some(dir) = &args.keyframe_dir {
@@ -818,6 +881,9 @@ fn main() -> Result<()> {
     }
     if let Some(path) = &args.surfel_dump_path {
         write_surfel_dump(path, &pipeline.map, args.surfel_dump_stride)?;
+    }
+    if let Some(path) = &args.state_dump_path {
+        write_state_dump(path, &stats.state_rows)?;
     }
     print_summary(&stats, &replay_config);
     if args.map_stats {
