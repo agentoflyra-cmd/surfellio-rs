@@ -694,8 +694,12 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
 
     let maintenance = map.maintenance_stats();
     println!(
-        "  maintenance: merged_total={} queue_len={} max_chain_depth={}",
-        maintenance.merged_total, maintenance.queue_len, maintenance.max_chain_depth
+        "  maintenance: merged_total={} queue_len={} max_chain_depth={} compacted_total={} deleted_total={}",
+        maintenance.merged_total,
+        maintenance.queue_len,
+        maintenance.max_chain_depth,
+        maintenance.compacted_total,
+        maintenance.deleted_total
     );
 
     if !stats.frame_durations_ms.is_empty() {

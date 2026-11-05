@@ -1648,4 +1648,130 @@ mod surfel_test {
         assert_eq!(roots.len(), 1, "the two fragments must form one root");
         assert_eq!(roots[0].count, 6, "counts must be aggregated");
     }
+
+    fn merged_map_fixture() -> SurfelMap {
+        let config = SurfelConfig {
+            growing_radius: 0.2,
+            min_mature_surfel_count: 4,
+            merge_enabled: true,
+            merge_max_normal_alignment: 0.99,
+            merge_max_offset: 0.05,
+            merge_max_distance: 0.8,
+            compaction_interval_frames: 0,
+            ..SurfelConfig::default()
+        };
+        let mut map = SurfelMap::new(
+            SurfelMapConfig {
+                voxel_size: 0.2,
+                search_radius: 0,
+            },
+            config,
+        );
+        map.set_time(0.0);
+        let mut points = Vec::new();
+        for i in 0..8 {
+            points.push(pt(-0.25 + 0.002 * i as f32, 0.01 * i as f32, 0.0));
+            points.push(pt(0.25 + 0.002 * i as f32, 0.01 * i as f32, 0.0));
+        }
+        map.insert(points.into_iter()).unwrap();
+        for _ in 0..8 {
+            map.process_maintenance();
+        }
+        assert!(map.maintenance_stats().merged_total >= 1);
+        map
+    }
+
+    #[test]
+    fn merge_forest_is_one_level_and_children_consistent() {
+        let map = merged_map_fixture();
+        let ids: Vec<_> = map.surfels.keys().collect();
+        for id in &ids {
+            let (root, depth) = map.resolve_root(*id);
+            assert!(depth <= 1, "merge forest must stay one level deep, got {depth}");
+            let surfel = map.surfels.get(*id).expect("id must exist");
+            if let Some(parent) = surfel.parent {
+                assert_eq!(parent, root, "parent must be the root directly");
+                let parent_surfel = map.surfels.get(parent).expect("parent must exist");
+                assert!(parent_surfel.parent.is_none(), "parent must be a root");
+            }
+        }
+        for id in &ids {
+            let surfel = map.surfels.get(*id).expect("id must exist");
+            if surfel.parent.is_some() {
+                continue;
+            }
+            let expected = ids
+                .iter()
+                .filter(|other| {
+                    map.surfels
+                        .get(**other)
+                        .is_some_and(|candidate| candidate.parent == Some(*id))
+                })
+                .count();
+            assert_eq!(
+                surfel.children.len(),
+                expected,
+                "children table must match the parent pointers"
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_removes_tombstones_without_changing_active_roots() {
+        let mut map = merged_map_fixture();
+        let snapshot: Vec<_> = map
+            .surfels
+            .iter()
+            .filter(|(_, surfel)| surfel.parent.is_none())
+            .map(|(id, surfel)| (id, surfel.count, surfel.mean_w, surfel.m2))
+            .collect();
+        let total_before = map.surfels.len();
+        let removed = map.compact_tombstones();
+        assert!(removed > 0, "expected tombstones to compact");
+        assert_eq!(map.surfels.len(), total_before - removed);
+        assert!(
+            map.surfels().all(|surfel| surfel.parent.is_none()),
+            "all merged tombstones must be gone"
+        );
+        for (id, count, mean, m2) in snapshot {
+            let surfel = map.surfels.get(id).expect("active root must survive");
+            assert_eq!(surfel.count, count);
+            assert!((surfel.mean_w - mean).norm() < 1e-12);
+            assert!((surfel.m2 - m2).norm() < 1e-12);
+        }
+        assert!(!map.is_empty());
+    }
+
+    #[test]
+    fn growing_gc_deletes_stale_unmatured_fragments() {
+        let config = SurfelConfig {
+            growing_radius: 0.2,
+            min_mature_surfel_count: 8,
+            merge_enabled: false,
+            delete_growing_enabled: true,
+            delete_growing_age_sec: 1.0,
+            gc_budget_per_frame: 1024,
+            ..SurfelConfig::default()
+        };
+        let mut map = SurfelMap::new(
+            SurfelMapConfig {
+                voxel_size: 0.4,
+                search_radius: 0,
+            },
+            config,
+        );
+        map.set_time(0.0);
+        map.insert([pt(0.0, 0.0, 0.0), pt(0.01, 0.0, 0.0), pt(0.0, 0.01, 0.0)].into_iter())
+            .unwrap();
+        assert_eq!(map.surfels.len(), 1, "expected one growing fragment");
+        // Still observed recently: must survive.
+        map.set_time(0.5);
+        map.process_maintenance();
+        assert_eq!(map.surfels.len(), 1, "young growing fragment must survive");
+        // Stale: must be deleted.
+        map.set_time(2.0);
+        let stats = map.process_maintenance();
+        assert_eq!(stats.deleted, 1, "stale growing fragment must be deleted");
+        assert!(map.is_empty());
+    }
 }

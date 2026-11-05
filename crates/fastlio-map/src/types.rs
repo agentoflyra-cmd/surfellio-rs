@@ -102,6 +102,14 @@ pub struct Surfel {
     /// True while the root is pending in the deferred-maintenance queue; keeps
     /// the queue free of duplicates.
     pub merge_queued: bool,
+    /// Reverse union-find links: the roots whose `parent` is this surfel. Only
+    /// meaningful on active roots; keeping it up to date makes the merge forest
+    /// one level deep (star forest), so `resolve_root` is O(1) and tombstones
+    /// are always leaves.
+    pub children: SmallVec<[SurfelID; 4]>,
+    /// Time (s) at which the surfel was last observed (insert/refit); drives the
+    /// stale/growing-fragment deletion policy.
+    pub last_observed_time_sec: f64,
 }
 
 impl Surfel {
@@ -121,6 +129,8 @@ impl Surfel {
             parent: None,
             created_time_sec: 0.0,
             merge_queued: false,
+            children: SmallVec::new(),
+            last_observed_time_sec: 0.0,
         }
     }
 

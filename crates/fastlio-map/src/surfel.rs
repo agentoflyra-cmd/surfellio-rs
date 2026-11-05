@@ -25,6 +25,12 @@ pub struct SurfelMap {
     merge_queue: VecDeque<SurfelID>,
     merged_total: usize,
     max_chain_depth: usize,
+    /// Frames processed so far; schedules periodic tombstone compaction.
+    frame_counter: u64,
+    /// Rotating scan cursor for the deletion policy.
+    gc_cursor: usize,
+    compacted_total: usize,
+    deleted_total: usize,
 }
 
 /// Result of one deferred map-maintenance step (diagnostic).
@@ -34,6 +40,10 @@ pub struct MaintenanceStats {
     pub queue_len: usize,
     pub max_chain_depth: usize,
     pub merged_total: usize,
+    pub compacted: usize,
+    pub deleted: usize,
+    pub compacted_total: usize,
+    pub deleted_total: usize,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -167,12 +177,17 @@ impl SurfelMap {
             merge_queue: VecDeque::new(),
             merged_total: 0,
             max_chain_depth: 0,
+            frame_counter: 0,
+            gc_cursor: 0,
+            compacted_total: 0,
+            deleted_total: 0,
         }
     }
 
     /// Set the timestamp (s) of the frame currently being processed.
     pub fn set_time(&mut self, time_sec: f64) {
         self.time_sec = time_sec;
+        self.frame_counter = self.frame_counter.wrapping_add(1);
     }
 
     /// Resolve the union-find root of a surfel and report the chain length.
@@ -622,6 +637,7 @@ impl SurfelMap {
     fn create_surfel(&mut self, point: &PointXYZI) -> Result<SurfelID> {
         let mut surfel = Surfel::from_first_point(point);
         surfel.created_time_sec = self.time_sec;
+        surfel.last_observed_time_sec = self.time_sec;
         let id = self.surfels.insert(surfel);
         self.reindex_surfel(id)?;
         self.enqueue_merge_candidate(id);
@@ -636,6 +652,7 @@ impl SurfelMap {
         let mut needs_reindex = { surfel.is_growing(self.surfel_config.min_mature_surfel_count) };
 
         surfel.count += 1;
+        surfel.last_observed_time_sec = self.time_sec;
         let delta = point.to_vec3().cast::<f64>() - surfel.mean_w;
         let n = surfel.count as f64;
         surfel.mean_w += delta / n;
@@ -784,6 +801,7 @@ impl SurfelMap {
                 parent_surfel.merge_from(&child_surfel);
             }
             self.detach_from_index(child);
+            self.adopt_children(child, new_root);
             if let Some(child_surfel) = self.surfels.get_mut(child) {
                 child_surfel.parent = Some(new_root);
             }
@@ -848,6 +866,32 @@ impl SurfelMap {
             }
         }
         targets
+    }
+
+    /// Reparent every tombstone attached to `old_parent` onto `new_parent` and
+    /// attach `old_parent` itself, keeping the merge forest one level deep.
+    ///
+    /// `children` holds every surfel whose `parent` is that root (tombstones
+    /// included): a later merge of the root must rewrite those parent pointers,
+    /// and compaction rebuilds the tables from them.
+    fn adopt_children(&mut self, old_parent: SurfelID, new_parent: SurfelID) {
+        if old_parent == new_parent {
+            return;
+        }
+        let mut children = self
+            .surfels
+            .get_mut(old_parent)
+            .map(|surfel| std::mem::take(&mut surfel.children))
+            .unwrap_or_default();
+        for child in &children {
+            if let Some(surfel) = self.surfels.get_mut(*child) {
+                surfel.parent = Some(new_parent);
+            }
+        }
+        children.push(old_parent);
+        if let Some(new_root) = self.surfels.get_mut(new_parent) {
+            new_root.children.extend(children);
+        }
     }
 
     /// Remove a surfel id from all indexed voxel buckets.
@@ -956,6 +1000,7 @@ impl SurfelMap {
                         root_surfel.merge_from(&child_surfel);
                     }
                     self.detach_from_index(child);
+                    self.adopt_children(child, new_root);
                     if let Some(child_surfel) = self.surfels.get_mut(child) {
                         child_surfel.parent = Some(new_root);
                     }
@@ -971,12 +1016,112 @@ impl SurfelMap {
                 }
             }
         }
+        let mut compacted = 0usize;
+        if self.surfel_config.merge_enabled
+            && self.surfel_config.compaction_interval_frames > 0
+            && (self.frame_counter % self.surfel_config.compaction_interval_frames as u64) == 0
+        {
+            compacted = self.compact_tombstones();
+            self.compacted_total += compacted;
+        }
+        let mut deleted = 0usize;
+        if self.surfel_config.delete_growing_enabled {
+            deleted = self.collect_garbage();
+            self.deleted_total += deleted;
+        }
         MaintenanceStats {
             merged,
             queue_len: self.merge_queue.len(),
             max_chain_depth: self.max_chain_depth,
             merged_total: self.merged_total,
+            compacted,
+            deleted,
+            compacted_total: self.compacted_total,
+            deleted_total: self.deleted_total,
         }
+    }
+
+    /// Remove merged-away surfels from the slotmap. The merge forest is one
+    /// level deep, so tombstones are leaves: they are not in any bucket and the
+    /// only references to them are the roots' reverse tables, rebuilt below.
+    pub fn compact_tombstones(&mut self) -> usize {
+        let tombstones: Vec<SurfelID> = self
+            .surfels
+            .iter()
+            .filter(|(_, surfel)| {
+                surfel.parent.is_some()
+                    && surfel.children.is_empty()
+                    && surfel.indexed_voxels.is_empty()
+            })
+            .map(|(id, _)| id)
+            .collect();
+        let mut removed = 0usize;
+        for id in tombstones {
+            if self.surfels.remove(id).is_some() {
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            // Drop the removed tombstones from every root's reverse table.
+            let pairs: Vec<(SurfelID, SurfelID)> = self
+                .surfels
+                .iter()
+                .filter_map(|(id, surfel)| surfel.parent.map(|parent| (parent, id)))
+                .collect();
+            let ids: Vec<SurfelID> = self.surfels.keys().collect();
+            for id in ids {
+                if let Some(surfel) = self.surfels.get_mut(id) {
+                    surfel.children.clear();
+                }
+            }
+            for (parent, child) in pairs {
+                if let Some(root) = self.surfels.get_mut(parent) {
+                    root.children.push(child);
+                }
+            }
+        }
+        removed
+    }
+
+    /// Delete stale growing fragments: roots that never reached maturity and
+    /// have not been observed for `delete_growing_age_sec`. Only leaves are
+    /// deleted (a root with children is kept so the forest stays valid).
+    fn collect_garbage(&mut self) -> usize {
+        let budget = self.surfel_config.gc_budget_per_frame;
+        if budget == 0 || self.surfels.is_empty() {
+            return 0;
+        }
+        let len = self.surfels.len();
+        if self.gc_cursor >= len {
+            self.gc_cursor = 0;
+        }
+        let keys: Vec<SurfelID> = self
+            .surfels
+            .keys()
+            .skip(self.gc_cursor)
+            .take(budget)
+            .collect();
+        self.gc_cursor += budget;
+
+        let min_mature = self.surfel_config.min_mature_surfel_count;
+        let age_limit = self.surfel_config.delete_growing_age_sec as f64;
+        let mut deleted = 0usize;
+        for id in keys {
+            let Some(surfel) = self.surfels.get(id) else {
+                continue;
+            };
+            if surfel.parent.is_some()
+                || !surfel.children.is_empty()
+                || surfel.count >= min_mature
+                || (self.time_sec - surfel.last_observed_time_sec) < age_limit
+            {
+                continue;
+            }
+            self.detach_from_index(id);
+            self.surfels.remove(id);
+            deleted += 1;
+        }
+        deleted
     }
 
     pub fn maintenance_stats(&self) -> MaintenanceStats {
@@ -985,6 +1130,10 @@ impl SurfelMap {
             queue_len: self.merge_queue.len(),
             max_chain_depth: self.max_chain_depth,
             merged_total: self.merged_total,
+            compacted: 0,
+            deleted: 0,
+            compacted_total: self.compacted_total,
+            deleted_total: self.deleted_total,
         }
     }
 

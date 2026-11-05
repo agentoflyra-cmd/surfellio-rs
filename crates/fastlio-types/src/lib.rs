@@ -155,6 +155,19 @@ pub struct SurfelConfig {
     pub merge_growing_enabled: bool,
     /// Maximum distance (m) between two growing surfel means for a merge.
     pub merge_growing_radius: f32,
+    /// Physical tombstone compaction period (frames); 0 disables it. Tombstones
+    /// are merged-away surfels: they are leaves in the one-level merge forest,
+    /// so they can be removed from the slotmap without breaking any chain.
+    pub compaction_interval_frames: usize,
+    /// Enable deletion of stale growing fragments (never matured within
+    /// `delete_growing_age_sec`); they are barely used by association and only
+    /// inflate the map.
+    pub delete_growing_enabled: bool,
+    /// Age (s, time since last observation) after which an unmatured growing
+    /// surfel may be deleted.
+    pub delete_growing_age_sec: f32,
+    /// Number of surfels the deletion policy scans per frame (rotating cursor).
+    pub gc_budget_per_frame: usize,
 }
 
 impl Default for SurfelConfig {
@@ -182,6 +195,10 @@ impl Default for SurfelConfig {
             maintenance_max_depth: 8,
             merge_growing_enabled: false,
             merge_growing_radius: 0.4,
+            compaction_interval_frames: 256,
+            delete_growing_enabled: false,
+            delete_growing_age_sec: 10.0,
+            gc_budget_per_frame: 512,
         }
     }
 }
