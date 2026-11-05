@@ -7,6 +7,8 @@ use fastlio_types::{
     Config, ImuSample, LidarImuExtrinsic, MeasureGroup, PointXYZI, Vec3, gravity_tangent_basis,
 };
 use nalgebra::{Rotation3, SMatrix, UnitQuaternion};
+use std::io::Write;
+use std::path::PathBuf;
 
 use crate::deskew::{build_motion_segments, deskew};
 
@@ -175,6 +177,13 @@ pub(crate) fn unify_imu_for_deskew(
     Ok(group_imu.last().cloned())
 }
 
+/// Optional export of deskewed keyframes for offline loop-closure experiments.
+pub struct KeyframeExport {
+    pub dir: PathBuf,
+    pub stride: usize,
+    pub counter: u64,
+}
+
 pub struct MainPipeline {
     pub map: SurfelMap,
     pub filter: IekfState,
@@ -187,6 +196,7 @@ pub struct MainPipeline {
     pub initializer: ImuInitializer,
     initial_gravity: Option<Vec3<f64>>,
     iekf_config: IekfConfig,
+    pub keyframe_export: Option<KeyframeExport>,
 }
 
 impl MainPipeline {
@@ -216,7 +226,18 @@ impl MainPipeline {
             initializer: ImuInitializer::default(),
             initial_gravity: None,
             iekf_config,
+            keyframe_export: None,
         }
+    }
+
+    /// Export every `stride`-th deskewed keyframe (world-frame points + pose)
+    /// as a compact binary file under `dir`.
+    pub fn set_keyframe_export(&mut self, dir: PathBuf, stride: usize) {
+        self.keyframe_export = Some(KeyframeExport {
+            dir,
+            stride: stride.max(1),
+            counter: 0,
+        });
     }
 
     pub fn process_measure_group(
@@ -326,7 +347,52 @@ impl MainPipeline {
         // the scan-to-map hot path stays predictable.
         self.map.process_maintenance();
 
+        if let Some(mut export) = self.keyframe_export.take() {
+            let index = export.counter;
+            export.counter += 1;
+            let result = if index % export.stride as u64 == 0 {
+                self.write_keyframe(&export, index, frame_time_sec, &pointcloud.point_cloud)
+            } else {
+                Ok(())
+            };
+            self.keyframe_export = Some(export);
+            result?;
+        }
+
         Ok(PipelineFrameSummary { tracking })
+    }
+
+    fn write_keyframe(
+        &self,
+        export: &KeyframeExport,
+        index: u64,
+        timestamp_sec: f64,
+        points: &[PointXYZI],
+    ) -> Result<()> {
+        std::fs::create_dir_all(&export.dir)?;
+        let path = export.dir.join(format!("kf_{index:06}.bin"));
+        let file = std::fs::File::create(&path)?;
+        let mut writer = std::io::BufWriter::new(file);
+        writer.write_all(&index.to_le_bytes())?;
+        writer.write_all(&timestamp_sec.to_le_bytes())?;
+        let position = self.filter.state.position;
+        let orientation = self.filter.state.orientation;
+        for value in [position.x, position.y, position.z] {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        for value in [orientation.w, orientation.i, orientation.j, orientation.k] {
+            writer.write_all(&value.to_le_bytes())?;
+        }
+        writer.write_all(&(points.len() as u32).to_le_bytes())?;
+        for point in points {
+            let point_i = self.extrinsic.transform_point(&point.to_vec3_f64());
+            let point_w = orientation * point_i + position;
+            for value in [point_w.x, point_w.y, point_w.z] {
+                writer.write_all(&(value as f32).to_le_bytes())?;
+            }
+        }
+        writer.flush()?;
+        Ok(())
     }
 }
 

@@ -38,6 +38,8 @@ struct ReplayArgs {
     gaussian_ply_path: Option<Utf8PathBuf>,
     surfel_dump_path: Option<Utf8PathBuf>,
     surfel_dump_stride: usize,
+    keyframe_dir: Option<Utf8PathBuf>,
+    keyframe_stride: usize,
     revisit_mask_path: Option<Utf8PathBuf>,
     assoc_diag: bool,
     playback_rate: f64,
@@ -99,7 +101,7 @@ impl ReplayArgs {
     fn parse(args: &[String]) -> Result<Self> {
         if args.len() < 3 {
             bail!(
-                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>] [--surfel-dump <out.csv>] [--assoc-diag] [--revisit-mask <mask.csv>]",
+                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>] [--surfel-dump <out.csv>] [--keyframe-dir <dir>] [--assoc-diag] [--revisit-mask <mask.csv>]",
                 args.first().map(String::as_str).unwrap_or("fastlio-replay")
             );
         }
@@ -108,6 +110,8 @@ impl ReplayArgs {
         let mut gaussian_ply_path = None;
         let mut surfel_dump_path = None;
         let mut surfel_dump_stride = 4usize;
+        let mut keyframe_dir = None;
+        let mut keyframe_stride = 20usize;
         let mut revisit_mask_path = None;
         let mut assoc_diag = false;
         let mut positional = Vec::new();
@@ -124,6 +128,16 @@ impl ReplayArgs {
                     bail!("--surfel-dump requires a CSV path");
                 };
                 surfel_dump_path = Some(Utf8PathBuf::from(path.as_str()));
+            } else if arg == "--keyframe-dir" {
+                let Some(path) = iter.next() else {
+                    bail!("--keyframe-dir requires a directory path");
+                };
+                keyframe_dir = Some(Utf8PathBuf::from(path.as_str()));
+            } else if arg == "--keyframe-stride" {
+                let Some(value) = iter.next() else {
+                    bail!("--keyframe-stride requires a value");
+                };
+                keyframe_stride = value.parse::<usize>().unwrap_or(20).max(1);
             } else if arg == "--surfel-dump-stride" {
                 let Some(value) = iter.next() else {
                     bail!("--surfel-dump-stride requires a value");
@@ -178,6 +192,8 @@ impl ReplayArgs {
             gaussian_ply_path,
             surfel_dump_path,
             surfel_dump_stride,
+            keyframe_dir,
+            keyframe_stride,
             revisit_mask_path,
             assoc_diag,
             playback_rate,
@@ -775,6 +791,9 @@ fn main() -> Result<()> {
         storm_mode: args.storm_mode,
     };
     let mut pipeline = MainPipeline::new(pipeline_config);
+    if let Some(dir) = &args.keyframe_dir {
+        pipeline.set_keyframe_export(dir.as_std_path().to_path_buf(), args.keyframe_stride);
+    }
     pipeline
         .map
         .set_assoc_diag_enabled(args.assoc_diag);
