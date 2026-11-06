@@ -108,6 +108,12 @@ pub struct PipelineFrameSummary {
     pub tracking: bool,
     /// Wall-clock time spent in deferred map maintenance for this frame (ms).
     pub maintenance_ms: f32,
+    /// Association geometry of this frame (height observability diagnostic).
+    pub observations: usize,
+    pub ground_observations: usize,
+    pub wall_observations: usize,
+    pub z_information: f64,
+    pub horizontal_information: f64,
 }
 
 /// Patch `group_imu` so that its first and last samples coincide with the
@@ -333,6 +339,7 @@ impl MainPipeline {
             false
         };
 
+        let association = self.filter.last_association;
         let map_points = pointcloud.point_cloud.iter().map(|p| {
             let point_i = self.extrinsic.transform_point(&p.to_vec3_f64());
             let point_w = self.filter.state.orientation * point_i + self.filter.state.position;
@@ -364,6 +371,11 @@ impl MainPipeline {
         Ok(PipelineFrameSummary {
             tracking,
             maintenance_ms: maintenance.elapsed_ms,
+            observations: association.observations,
+            ground_observations: association.ground_observations,
+            wall_observations: association.wall_observations,
+            z_information: association.z_information,
+            horizontal_information: association.horizontal_information,
         })
     }
 

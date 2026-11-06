@@ -31,6 +31,7 @@ struct ReplayConfig {
     time_offset_lidar_to_imu_sec: f64,
     storm_mode: bool,
     collect_state: bool,
+    collect_assoc_geometry: bool,
 }
 
 #[derive(Debug)]
@@ -45,6 +46,7 @@ struct ReplayArgs {
     keyframe_dir: Option<Utf8PathBuf>,
     keyframe_stride: usize,
     state_dump_path: Option<Utf8PathBuf>,
+    assoc_geometry_dump_path: Option<Utf8PathBuf>,
     revisit_mask_path: Option<Utf8PathBuf>,
     assoc_diag: bool,
     playback_rate: f64,
@@ -106,7 +108,7 @@ impl ReplayArgs {
     fn parse(args: &[String]) -> Result<Self> {
         if args.len() < 3 {
             bail!(
-                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>] [--surfel-dump <out.csv>] [--keyframe-dir <dir>] [--state-dump <csv>] [--assoc-diag] [--revisit-mask <mask.csv>]",
+                "usage: {} <bag.mcap> <config.yaml> [playback_rate] [channel_capacity] [trajectory.csv] [surfel-map.pcd] [--storm] [--map-stats] [--gaussian-ply <out.ply>] [--surfel-dump <out.csv>] [--keyframe-dir <dir>] [--state-dump <csv>] [--assoc-geometry-dump <csv>] [--assoc-diag] [--revisit-mask <mask.csv>]",
                 args.first().map(String::as_str).unwrap_or("fastlio-replay")
             );
         }
@@ -118,6 +120,7 @@ impl ReplayArgs {
         let mut keyframe_dir = None;
         let mut keyframe_stride = 20usize;
         let mut state_dump_path = None;
+        let mut assoc_geometry_dump_path = None;
         let mut revisit_mask_path = None;
         let mut assoc_diag = false;
         let mut positional = Vec::new();
@@ -134,6 +137,11 @@ impl ReplayArgs {
                     bail!("--surfel-dump requires a CSV path");
                 };
                 surfel_dump_path = Some(Utf8PathBuf::from(path.as_str()));
+            } else if arg == "--assoc-geometry-dump" {
+                let Some(path) = iter.next() else {
+                    bail!("--assoc-geometry-dump requires a CSV path");
+                };
+                assoc_geometry_dump_path = Some(Utf8PathBuf::from(path.as_str()));
             } else if arg == "--state-dump" {
                 let Some(path) = iter.next() else {
                     bail!("--state-dump requires a CSV path");
@@ -206,6 +214,7 @@ impl ReplayArgs {
             keyframe_dir,
             keyframe_stride,
             state_dump_path,
+            assoc_geometry_dump_path,
             revisit_mask_path,
             assoc_diag,
             playback_rate,
@@ -259,6 +268,18 @@ struct ReplayStats {
     /// Per-frame deferred-maintenance wall time (ms), parallel to
     /// `frame_durations_ms`.
     frame_maintenance_ms: Vec<f32>,
+    /// Per-frame association geometry (height observability diagnostics).
+    assoc_rows: Vec<AssocGeometryRow>,
+}
+
+#[derive(Clone)]
+struct AssocGeometryRow {
+    timestamp_sec: f64,
+    observations: usize,
+    ground_observations: usize,
+    wall_observations: usize,
+    z_information: f64,
+    horizontal_information: f64,
 }
 
 #[derive(Clone)]
@@ -412,6 +433,16 @@ fn process_ready_groups(
                         timestamp_sec,
                         state: pipeline.filter.state.clone(),
                         covariance_diag,
+                    });
+                }
+                if config.collect_assoc_geometry {
+                    stats.assoc_rows.push(AssocGeometryRow {
+                        timestamp_sec,
+                        observations: frame_summary.observations,
+                        ground_observations: frame_summary.ground_observations,
+                        wall_observations: frame_summary.wall_observations,
+                        z_information: frame_summary.z_information,
+                        horizontal_information: frame_summary.horizontal_information,
                     });
                 }
                 stats.trajectory.push(TrajectoryRow {
@@ -735,6 +766,31 @@ fn rotation_matrix_to_quaternion(rotation: &Mat3<f64>) -> [f64; 4] {
     [w / norm, x / norm, y / norm, z / norm]
 }
 
+/// Write per-frame association geometry for the height-observability analysis.
+fn write_assoc_geometry_dump(path: &Utf8PathBuf, rows: &[AssocGeometryRow]) -> Result<()> {
+    let file = File::create(path)
+        .with_context(|| format!("failed to create assoc geometry dump `{path}`"))?;
+    let mut writer = BufWriter::new(file);
+    writeln!(
+        writer,
+        "timestamp_sec,observations,ground_observations,wall_observations,z_information,horizontal_information"
+    )?;
+    for row in rows {
+        writeln!(
+            writer,
+            "{:.6},{},{},{},{:.6},{:.6}",
+            row.timestamp_sec,
+            row.observations,
+            row.ground_observations,
+            row.wall_observations,
+            row.z_information,
+            row.horizontal_information
+        )?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
 /// Write per-frame filter states for offline z-drift analysis.
 fn write_state_dump(path: &Utf8PathBuf, rows: &[StateRow]) -> Result<()> {
     let file =
@@ -883,6 +939,7 @@ fn main() -> Result<()> {
         time_offset_lidar_to_imu_sec: offset,
         storm_mode: args.storm_mode,
         collect_state: args.state_dump_path.is_some(),
+        collect_assoc_geometry: args.assoc_geometry_dump_path.is_some(),
     };
     let mut pipeline = MainPipeline::new(pipeline_config);
     if let Some(dir) = &args.keyframe_dir {
@@ -913,6 +970,9 @@ fn main() -> Result<()> {
     }
     if let Some(path) = &args.state_dump_path {
         write_state_dump(path, &stats.state_rows)?;
+    }
+    if let Some(path) = &args.assoc_geometry_dump_path {
+        write_assoc_geometry_dump(path, &stats.assoc_rows)?;
     }
     print_summary(&stats, &replay_config);
     if args.map_stats {

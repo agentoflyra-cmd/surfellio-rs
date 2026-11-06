@@ -117,10 +117,26 @@ pub(crate) fn box_minus(
     dx
 }
 
+/// Per-frame association geometry summary, used for the front-end z
+/// observability diagnostics: ground-like observations constrain height,
+/// vertical walls constrain the horizontal directions.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AssocGeometryStats {
+    pub observations: usize,
+    pub ground_observations: usize,
+    pub wall_observations: usize,
+    /// Sum of n_z^2 over associated plane normals (height-direction geometry).
+    pub z_information: f64,
+    /// Sum of (n_x^2 + n_y^2), the complementary horizontal information.
+    pub horizontal_information: f64,
+}
+
 pub struct IekfState {
     pub state: NavState,
     pub gravity_basis: Mat32,
     pub covariance: SMatrix<f64, 23, 23>,
+    /// Association geometry of the last update (diagnostic only).
+    pub last_association: AssocGeometryStats,
 }
 
 impl Default for IekfState {
@@ -130,6 +146,7 @@ impl Default for IekfState {
             gravity_basis: gravity_tangent_basis(&state.gravity),
             state,
             covariance: SMatrix::<f64, 23, 23>::identity() * 0.1,
+            last_association: AssocGeometryStats::default(),
         }
     }
 }
@@ -206,6 +223,7 @@ impl IekfState {
             state,
             gravity_basis,
             covariance,
+            last_association: AssocGeometryStats::default(),
         })
     }
     pub fn update(
@@ -223,10 +241,12 @@ impl IekfState {
         let mut gravity_basis_iter = gravity_basis_prior;
         let mut p_final = p_prior;
         let mut observations = Vec::new();
+        let mut assoc_stats = AssocGeometryStats::default();
 
         let mut final_error = SVector::zeros();
 
         for _ in 0..config.max_iterations {
+            assoc_stats = AssocGeometryStats::default();
             build_surfel_observation(
                 &state_iter,
                 points,
@@ -234,6 +254,7 @@ impl IekfState {
                 extrinsic,
                 config,
                 &mut observations,
+                &mut assoc_stats,
             )?;
             let observations_len = observations.len();
 
@@ -266,6 +287,7 @@ impl IekfState {
         self.state = state_iter;
         self.gravity_basis = gravity_basis_iter;
         self.covariance = reset_covariance(&p_final, &final_error);
+        self.last_association = assoc_stats;
         Ok(())
     }
 }

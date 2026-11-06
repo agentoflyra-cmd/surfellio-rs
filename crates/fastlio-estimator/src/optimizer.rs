@@ -1,5 +1,5 @@
 use crate::{
-    iekf::{box_minus, gravity_box_plus},
+    iekf::{AssocGeometryStats, box_minus, gravity_box_plus},
     linearized_point_to_surfel_observation, skew,
 };
 use fastlio_map::surfel::SurfelMap;
@@ -61,6 +61,7 @@ pub(crate) fn build_surfel_observation(
     extrinsic: &LidarImuExtrinsic,
     config: &IekfConfig,
     out: &mut Vec<LinearizedObservation>,
+    stats: &mut AssocGeometryStats,
 ) -> Result<(), IekfUpdateError> {
     out.clear();
     let association_point_covariance_w =
@@ -99,6 +100,16 @@ pub(crate) fn build_surfel_observation(
             let residual = point_w_vec - obs.mean_w;
             let (whiten_residual, whiten_jacobian) =
                 whiten_surfel_measurement(&measurement_covariance, &residual, &jacobian)?;
+            let normal_w = obs.eigenvectors.column(0);
+            let nz = normal_w.z;
+            stats.observations += 1;
+            if nz.abs() > 0.8 {
+                stats.ground_observations += 1;
+            } else {
+                stats.wall_observations += 1;
+            }
+            stats.z_information += nz * nz;
+            stats.horizontal_information += 1.0 - nz * nz;
             let surfel_linearized_observation = SurfelLinearizedObservation {
                 residual: whiten_residual,
                 jacobian: whiten_jacobian,
