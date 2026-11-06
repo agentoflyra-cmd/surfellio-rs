@@ -541,7 +541,8 @@ impl SurfelMap {
             if growing && grossing_weight <= 0.0 {
                 continue;
             }
-            let Some((_, _, score)) = surfel.surfel_score(point, &point_w_covariance, config) else {
+            let Some((_, _, score)) = surfel.surfel_score(point, &point_w_covariance, config)
+            else {
                 continue;
             };
             if score > config.max_mahalanobis_distance.powi(2) as f64 {
@@ -615,7 +616,11 @@ impl SurfelMap {
                     };
                     for id in bucket.iter().copied() {
                         let (root, _) = self.resolve_root(id);
-                        if self.surfels.get(root).is_some_and(|surfel| surfel.count >= 2) {
+                        if self
+                            .surfels
+                            .get(root)
+                            .is_some_and(|surfel| surfel.count >= 2)
+                        {
                             return true;
                         }
                     }
@@ -943,21 +948,26 @@ impl SurfelMap {
             return 0;
         }
         let min_mature = self.surfel_config.min_mature_surfel_count;
-        let Ok(voxel_key) = VoxelKey::from_vec3(
-            surfel.mean_w.cast(),
-            self.surfel_map_config.voxel_size,
-        ) else {
+        let Ok(voxel_key) =
+            VoxelKey::from_vec3(surfel.mean_w.cast(), self.surfel_map_config.voxel_size)
+        else {
             return 0;
         };
-        let scan_radius = ((radius / self.surfel_map_config.voxel_size as f64).ceil() as i32)
-            .max(1);
+        let scan_radius =
+            ((radius / self.surfel_map_config.voxel_size as f64).ceil() as i32).max(1);
         let mut targets = Vec::new();
         let mut seen = HashSet::new();
         'scan: for vx in voxel_key.x - scan_radius..=voxel_key.x + scan_radius {
             for vy in voxel_key.y - scan_radius..=voxel_key.y + scan_radius {
                 for vz in voxel_key.z - scan_radius..=voxel_key.z + scan_radius {
-                    let Some(bucket) = self.buckets.get(&VoxelKey { x: vx, y: vy, z: vz }.pack())
-                    else {
+                    let Some(bucket) = self.buckets.get(
+                        &VoxelKey {
+                            x: vx,
+                            y: vy,
+                            z: vz,
+                        }
+                        .pack(),
+                    ) else {
                         continue;
                     };
                     for other_id in bucket.iter().copied() {
@@ -1040,10 +1050,9 @@ impl SurfelMap {
     /// Coplanar root neighbours of a surfel, scanned at maintenance time.
     fn coplanar_neighbours(&self, root: SurfelID, surfel: &Surfel) -> Vec<SurfelID> {
         const MAX_TARGETS: usize = 8;
-        let Ok(voxel_key) = VoxelKey::from_vec3(
-            surfel.mean_w.cast(),
-            self.surfel_map_config.voxel_size,
-        ) else {
+        let Ok(voxel_key) =
+            VoxelKey::from_vec3(surfel.mean_w.cast(), self.surfel_map_config.voxel_size)
+        else {
             return Vec::new();
         };
         let scan_radius = ((self.surfel_config.merge_max_distance
@@ -1055,8 +1064,14 @@ impl SurfelMap {
         for vx in voxel_key.x - scan_radius..=voxel_key.x + scan_radius {
             for vy in voxel_key.y - scan_radius..=voxel_key.y + scan_radius {
                 for vz in voxel_key.z - scan_radius..=voxel_key.z + scan_radius {
-                    let Some(bucket) = self.buckets.get(&VoxelKey { x: vx, y: vy, z: vz }.pack())
-                    else {
+                    let Some(bucket) = self.buckets.get(
+                        &VoxelKey {
+                            x: vx,
+                            y: vy,
+                            z: vz,
+                        }
+                        .pack(),
+                    ) else {
                         continue;
                     };
                     for other_id in bucket.iter().copied() {
@@ -1198,7 +1213,8 @@ impl SurfelMap {
                     // voxels, then the one that has been alive longer.
                     let (new_root, child) = if current_surfel.indexed_voxels.len()
                         > target_surfel.indexed_voxels.len()
-                        || (current_surfel.indexed_voxels.len() == target_surfel.indexed_voxels.len()
+                        || (current_surfel.indexed_voxels.len()
+                            == target_surfel.indexed_voxels.len()
                             && current_surfel.created_time_sec <= target_surfel.created_time_sec)
                     {
                         (current_root, target_root)

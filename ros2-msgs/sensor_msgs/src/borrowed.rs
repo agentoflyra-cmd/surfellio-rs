@@ -498,7 +498,11 @@ impl<'a> MultiEchoLaserScan<'a> {
             range_min: self.range_min,
             range_max: self.range_max,
             ranges: self.ranges.iter().map(|item| item.to_owned()).collect(),
-            intensities: self.intensities.iter().map(|item| item.to_owned()).collect(),
+            intensities: self
+                .intensities
+                .iter()
+                .map(|item| item.to_owned())
+                .collect(),
         }
     }
 }
@@ -824,4 +828,3 @@ impl<'a> SetCameraInfoResponse<'a> {
         }
     }
 }
-

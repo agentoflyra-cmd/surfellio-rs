@@ -1,12 +1,17 @@
 #[allow(unused_imports)]
-pub use cdr_runtime::{borrow_decode_from_bytes, BorrowDecodeCdr, CdrDecoder, CdrError, CdrResult, DecodeCdr, Endianness, WChar16, WChar32};
-#[allow(unused_imports)]
 use crate::borrowed::*;
+#[allow(unused_imports)]
+pub use cdr_runtime::{
+    BorrowDecodeCdr, CdrDecoder, CdrError, CdrResult, DecodeCdr, Endianness, WChar16, WChar32,
+    borrow_decode_from_bytes,
+};
 
 impl<'a> BorrowDecodeCdr<'a> for CustomMsg<'a> {
     fn borrow_decode_cdr(decoder: &mut CdrDecoder<'a>) -> CdrResult<Self> {
         Ok(Self {
-            header: <std_msgs::borrowed::Header<'a> as BorrowDecodeCdr<'a>>::borrow_decode_cdr(decoder)?,
+            header: <std_msgs::borrowed::Header<'a> as BorrowDecodeCdr<'a>>::borrow_decode_cdr(
+                decoder,
+            )?,
             timebase: <u64 as DecodeCdr>::decode_cdr(decoder)?,
             point_num: <u32 as DecodeCdr>::decode_cdr(decoder)?,
             lidar_id: <u8 as DecodeCdr>::decode_cdr(decoder)?,
@@ -30,4 +35,3 @@ impl<'a> BorrowDecodeCdr<'a> for CustomPoint<'a> {
         })
     }
 }
-

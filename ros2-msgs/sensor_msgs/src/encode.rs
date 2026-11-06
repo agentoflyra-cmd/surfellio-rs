@@ -5,7 +5,9 @@ use crate::msg::*;
 #[allow(unused_imports)]
 use crate::srv::*;
 #[allow(unused_imports)]
-pub use cdr_runtime::{encode_to_vec, CdrEncoder, CdrError, CdrResult, EncodeCdr, Endianness, WChar16, WChar32};
+pub use cdr_runtime::{
+    CdrEncoder, CdrError, CdrResult, EncodeCdr, Endianness, WChar16, WChar32, encode_to_vec,
+};
 
 impl EncodeCdr for BatteryState {
     fn encode_cdr(&self, encoder: &mut CdrEncoder) -> CdrResult<()> {

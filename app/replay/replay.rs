@@ -1,7 +1,10 @@
 use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8PathBuf;
 use fastlio_dataset::{ReadStats, SensorEvent, read_mcap_events_on_topics};
-use fastlio_map::{surfel::SurfelMap, types::{GeometryClass, Surfel}};
+use fastlio_map::{
+    surfel::SurfelMap,
+    types::{GeometryClass, Surfel},
+};
 use fastlio_pipeline::{MainPipeline, PipelineFrameSummary, synchronizer::MeasurementSynchronizer};
 use fastlio_types::{Mat3, NavState, read_from_config_path};
 use pcd_rs::{DataKind, PcdSerialize, WriterInit};
@@ -728,8 +731,8 @@ fn rotation_matrix_to_quaternion(rotation: &Mat3<f64>) -> [f64; 4] {
 
 /// Write per-frame filter states for offline z-drift analysis.
 fn write_state_dump(path: &Utf8PathBuf, rows: &[StateRow]) -> Result<()> {
-    let file = File::create(path)
-        .with_context(|| format!("failed to create state dump `{path}`"))?;
+    let file =
+        File::create(path).with_context(|| format!("failed to create state dump `{path}`"))?;
     let mut writer = BufWriter::new(file);
     writeln!(
         writer,
@@ -741,17 +744,39 @@ fn write_state_dump(path: &Utf8PathBuf, rows: &[StateRow]) -> Result<()> {
             writer,
             "{:.6},{:.6},{:.6},{:.6},{:.9},{:.9},{:.9},{:.9},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e},{:.3e}",
             row.timestamp_sec,
-            s.position.x, s.position.y, s.position.z,
-            s.orientation.w, s.orientation.i, s.orientation.j, s.orientation.k,
-            s.velocity.x, s.velocity.y, s.velocity.z,
-            s.gravity.x, s.gravity.y, s.gravity.z,
-            s.gyro_bias.x, s.gyro_bias.y, s.gyro_bias.z,
-            s.accel_bias.x, s.accel_bias.y, s.accel_bias.z,
-            row.covariance_diag[0], row.covariance_diag[1], row.covariance_diag[2],
-            row.covariance_diag[3], row.covariance_diag[4], row.covariance_diag[5],
-            row.covariance_diag[6], row.covariance_diag[7],
-            row.covariance_diag[15], row.covariance_diag[16], row.covariance_diag[17],
-            row.covariance_diag[18], row.covariance_diag[19], row.covariance_diag[20]
+            s.position.x,
+            s.position.y,
+            s.position.z,
+            s.orientation.w,
+            s.orientation.i,
+            s.orientation.j,
+            s.orientation.k,
+            s.velocity.x,
+            s.velocity.y,
+            s.velocity.z,
+            s.gravity.x,
+            s.gravity.y,
+            s.gravity.z,
+            s.gyro_bias.x,
+            s.gyro_bias.y,
+            s.gyro_bias.z,
+            s.accel_bias.x,
+            s.accel_bias.y,
+            s.accel_bias.z,
+            row.covariance_diag[0],
+            row.covariance_diag[1],
+            row.covariance_diag[2],
+            row.covariance_diag[3],
+            row.covariance_diag[4],
+            row.covariance_diag[5],
+            row.covariance_diag[6],
+            row.covariance_diag[7],
+            row.covariance_diag[15],
+            row.covariance_diag[16],
+            row.covariance_diag[17],
+            row.covariance_diag[18],
+            row.covariance_diag[19],
+            row.covariance_diag[20]
         )?;
     }
     writer.flush()?;
@@ -762,8 +787,8 @@ fn write_state_dump(path: &Utf8PathBuf, rows: &[StateRow]) -> Result<()> {
 /// experiments: position, plane normal, count and creation/last-observation
 /// times (epochs), sampled every `stride` surfels.
 fn write_surfel_dump(path: &Utf8PathBuf, map: &SurfelMap, stride: usize) -> Result<()> {
-    let file = File::create(path)
-        .with_context(|| format!("failed to create surfel dump `{path}`"))?;
+    let file =
+        File::create(path).with_context(|| format!("failed to create surfel dump `{path}`"))?;
     let mut writer = BufWriter::new(file);
     writeln!(
         writer,
@@ -857,9 +882,7 @@ fn main() -> Result<()> {
     if let Some(dir) = &args.keyframe_dir {
         pipeline.set_keyframe_export(dir.as_std_path().to_path_buf(), args.keyframe_stride);
     }
-    pipeline
-        .map
-        .set_assoc_diag_enabled(args.assoc_diag);
+    pipeline.map.set_assoc_diag_enabled(args.assoc_diag);
     let mut revisit_labels = match &args.revisit_mask_path {
         Some(path) => RevisitLabels::load(path)?,
         None => RevisitLabels::default(),
@@ -895,7 +918,10 @@ fn main() -> Result<()> {
 /// Print surfel-map lifecycle statistics (Phase 2 diagnostics).
 fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
     let lifecycle = map.lifecycle_stats();
-    let active = map.surfels().filter(|surfel| surfel.parent.is_none()).count();
+    let active = map
+        .surfels()
+        .filter(|surfel| surfel.parent.is_none())
+        .count();
     println!("map lifecycle stats");
     println!(
         "  total surfels: {} (active roots {}, merged tombstones {})",
@@ -911,9 +937,18 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
         "  mean count: {:.1}, mean lambda0: {:.6}",
         lifecycle.mean_count, lifecycle.mean_lambda0
     );
-    println!("  count buckets   [0,1,2-3,4-7,8-15,16-31,32-63,64+]: {:?}", lifecycle.count_hist);
-    println!("  voxel occupancy [0,1,2-3,4-7,8-15,16-31,32-63,64+]: {:?}", lifecycle.occupancy_hist);
-    println!("  coplanar duplicate pairs (estimated): {}", lifecycle.coplanar_duplicate_pairs);
+    println!(
+        "  count buckets   [0,1,2-3,4-7,8-15,16-31,32-63,64+]: {:?}",
+        lifecycle.count_hist
+    );
+    println!(
+        "  voxel occupancy [0,1,2-3,4-7,8-15,16-31,32-63,64+]: {:?}",
+        lifecycle.occupancy_hist
+    );
+    println!(
+        "  coplanar duplicate pairs (estimated): {}",
+        lifecycle.coplanar_duplicate_pairs
+    );
 
     let maintenance = map.maintenance_stats();
     println!(
@@ -995,9 +1030,7 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fastlio_types::{
-        ImuSample, LidarFrame, PointXYZI, SurfelConfig, SurfelMapConfig, Vec3,
-    };
+    use fastlio_types::{ImuSample, LidarFrame, PointXYZI, SurfelConfig, SurfelMapConfig, Vec3};
     use std::fs;
 
     fn imu_event(t: f64) -> SensorEvent {
@@ -1178,9 +1211,14 @@ mod tests {
             .expect("vertex count");
         assert_eq!(
             vertex_count,
-            map.surfels().filter(|surfel| surfel.parent.is_none()).count()
+            map.surfels()
+                .filter(|surfel| surfel.parent.is_none())
+                .count()
         );
-        assert_eq!(bytes.len() - header_end, vertex_count * GAUSSIAN_PLY_FIELDS * 4);
+        assert_eq!(
+            bytes.len() - header_end,
+            vertex_count * GAUSSIAN_PLY_FIELDS * 4
+        );
         fs::remove_file(&path).ok();
     }
 

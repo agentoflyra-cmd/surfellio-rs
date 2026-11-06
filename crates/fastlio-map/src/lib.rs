@@ -1415,9 +1415,7 @@ mod surfel_test {
 
     #[test]
     fn growing_surfels_associate_only_when_weighted() {
-        let points = || {
-            [pt(0.0, 0.0, 0.0), pt(0.1, 0.0, 0.0), pt(0.0, 0.1, 0.0)].into_iter()
-        };
+        let points = || [pt(0.0, 0.0, 0.0), pt(0.1, 0.0, 0.0), pt(0.0, 0.1, 0.0)].into_iter();
         let query = pt(0.02, 0.01, 0.0);
         let covariance = Mat3::identity() * 0.03_f64.powi(2);
 
@@ -1531,7 +1529,10 @@ mod surfel_test {
         for _ in 0..8 {
             map.process_maintenance();
         }
-        assert!(map.maintenance_stats().merged_total > 0, "expected at least one merge");
+        assert!(
+            map.maintenance_stats().merged_total > 0,
+            "expected at least one merge"
+        );
 
         let ids: Vec<_> = map.surfels.keys().collect();
         for id in ids {
@@ -1687,7 +1688,10 @@ mod surfel_test {
         let ids: Vec<_> = map.surfels.keys().collect();
         for id in &ids {
             let (root, depth) = map.resolve_root(*id);
-            assert!(depth <= 1, "merge forest must stay one level deep, got {depth}");
+            assert!(
+                depth <= 1,
+                "merge forest must stay one level deep, got {depth}"
+            );
             let surfel = map.surfels.get(*id).expect("id must exist");
             if let Some(parent) = surfel.parent {
                 assert_eq!(parent, root, "parent must be the root directly");

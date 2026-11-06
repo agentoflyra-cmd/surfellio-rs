@@ -65,4 +65,3 @@ impl<'a> CustomPoint<'a> {
         }
     }
 }
-

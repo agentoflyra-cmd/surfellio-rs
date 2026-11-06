@@ -1,8 +1,8 @@
 use std::char;
 use std::fmt;
-use std::mem::size_of;
 use std::mem::ManuallyDrop;
 use std::mem::MaybeUninit;
+use std::mem::size_of;
 use std::ptr;
 use std::slice;
 
@@ -1802,8 +1802,8 @@ impl EncodeCdr for WChar32 {
 #[cfg(test)]
 mod test {
     use super::{
-        decode_from_bytes, encode_to_vec, CdrDecoder, CdrEncoder, CdrEncoding, CdrError,
-        CdrRepresentation, EncodeCdr, Endianness, WChar16, WChar32,
+        CdrDecoder, CdrEncoder, CdrEncoding, CdrError, CdrRepresentation, EncodeCdr, Endianness,
+        WChar16, WChar32, decode_from_bytes, encode_to_vec,
     };
 
     fn little_endian_message(payload: &[u8]) -> Vec<u8> {
