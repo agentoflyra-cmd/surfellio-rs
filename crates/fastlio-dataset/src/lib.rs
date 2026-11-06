@@ -70,9 +70,161 @@ impl SensorEvent {
                 };
                 Ok(Self::Imu(msg))
             }
-            ros2_dispatch::DecodedMessageBorrowed::SensorMsgsPointCloud2(_) => todo!(),
+            ros2_dispatch::DecodedMessageBorrowed::SensorMsgsPointCloud2(cloud) => {
+                Ok(Self::Lidar(decode_pointcloud2_frame(&cloud)?))
+            }
         }
     }
+}
+
+/// Point layout of one `sensor_msgs/PointCloud2` message: byte offset and
+/// datatype for the fields we consume.
+struct PointCloudFields {
+    x: (usize, u8),
+    y: (usize, u8),
+    z: (usize, u8),
+    intensity: Option<(usize, u8)>,
+    time: Option<(usize, u8)>,
+    line: Option<(usize, u8)>,
+}
+
+fn find_field(
+    fields: &[sensor_msgs::borrowed::PointField<'_>],
+    names: &[&str],
+) -> Option<(usize, u8)> {
+    fields
+        .iter()
+        .find(|field| names.iter().any(|name| field.name == *name))
+        .map(|field| (field.offset as usize, field.datatype))
+}
+
+fn read_scalar(data: &[u8], offset: usize, datatype: u8, big_endian: bool) -> Option<f64> {
+    let read = |n: usize| -> Option<&[u8]> { data.get(offset..offset.checked_add(n)?) };
+    macro_rules! from_bytes {
+        ($ty:ty, $n:expr) => {{
+            let bytes = read($n)?;
+            let mut raw = [0u8; $n];
+            raw.copy_from_slice(bytes);
+            Some(if big_endian {
+                <$ty>::from_be_bytes(raw) as f64
+            } else {
+                <$ty>::from_le_bytes(raw) as f64
+            })
+        }};
+    }
+    use sensor_msgs::borrowed::PointField;
+    match datatype {
+        PointField::INT8 => from_bytes!(i8, 1),
+        PointField::UINT8 => from_bytes!(u8, 1),
+        PointField::INT16 => from_bytes!(i16, 2),
+        PointField::UINT16 => from_bytes!(u16, 2),
+        PointField::INT32 => from_bytes!(i32, 4),
+        PointField::UINT32 => from_bytes!(u32, 4),
+        PointField::FLOAT32 => from_bytes!(f32, 4),
+        PointField::FLOAT64 => from_bytes!(f64, 8),
+        _ => None,
+    }
+}
+
+/// Convert a `PointCloud2` sweep into a `LidarFrame`.
+///
+/// The base timestamp is the header stamp (ROS time). Per-point offsets come
+/// from a `time`/`t` field when present: floating point values are seconds
+/// (or absolute epoch seconds, in which case the base stamp is subtracted),
+/// integer values are nanoseconds since the sweep start. Without a time field
+/// every point gets offset zero, which is acceptable for 10 Hz spinning
+/// LiDARs but disables motion compensation.
+fn decode_pointcloud2_frame(cloud: &sensor_msgs::borrowed::PointCloud2<'_>) -> Result<LidarFrame> {
+    let base_timestamp_sec =
+        transfer_from_header(cloud.header.stamp.sec, cloud.header.stamp.nanosec);
+    let width = cloud.width as usize;
+    let height = cloud.height as usize;
+    let point_step = cloud.point_step as usize;
+    let row_step = cloud.row_step as usize;
+    if point_step == 0 {
+        anyhow::bail!("PointCloud2 point_step is zero");
+    }
+    let layout = PointCloudFields {
+        x: find_field(&cloud.fields, &["x"]).context("PointCloud2 has no x field")?,
+        y: find_field(&cloud.fields, &["y"]).context("PointCloud2 has no y field")?,
+        z: find_field(&cloud.fields, &["z"]).context("PointCloud2 has no z field")?,
+        intensity: find_field(&cloud.fields, &["intensity", "i"]),
+        time: find_field(
+            &cloud.fields,
+            &["time", "t", "timestamp", "time_stamp", "offset_time"],
+        ),
+        line: find_field(&cloud.fields, &["ring", "line"]),
+    };
+    let count = width.saturating_mul(height);
+    let mut points = Vec::with_capacity(count);
+    let mut max_offset_sec = 0.0_f64;
+    let big_endian = cloud.is_bigendian;
+    for row in 0..height {
+        let row_base = row.saturating_mul(row_step);
+        for col in 0..width {
+            let point_base = row_base.saturating_add(col.saturating_mul(point_step));
+            let coord = |(offset, datatype): (usize, u8)| -> Option<f32> {
+                read_scalar(&cloud.data, point_base + offset, datatype, big_endian)
+                    .map(|value| value as f32)
+            };
+            let (Some(x), Some(y), Some(z)) = (coord(layout.x), coord(layout.y), coord(layout.z))
+            else {
+                continue;
+            };
+            if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+                continue;
+            }
+            let intensity = layout
+                .intensity
+                .and_then(|field| coord(field))
+                .unwrap_or(0.0);
+            let offset_time_sec = layout
+                .time
+                .and_then(|(offset, datatype)| {
+                    let raw = read_scalar(&cloud.data, point_base + offset, datatype, big_endian)?;
+                    Some(match datatype {
+                        sensor_msgs::borrowed::PointField::FLOAT32
+                        | sensor_msgs::borrowed::PointField::FLOAT64 => {
+                            if raw > 1.0e6 {
+                                raw - base_timestamp_sec
+                            } else {
+                                raw
+                            }
+                        }
+                        _ => {
+                            if raw > 1.0e6 {
+                                raw / 1.0e9
+                            } else if raw > 1.0e3 {
+                                raw / 1.0e6
+                            } else {
+                                raw
+                            }
+                        }
+                    })
+                })
+                .unwrap_or(0.0)
+                .max(0.0);
+            max_offset_sec = max_offset_sec.max(offset_time_sec);
+            let line = layout
+                .line
+                .and_then(|(offset, datatype)| {
+                    read_scalar(&cloud.data, point_base + offset, datatype, big_endian)
+                })
+                .unwrap_or(0.0) as u8;
+            points.push(TimedPoint {
+                offset_time_sec,
+                point: PointXYZI { x, y, z, intensity },
+                tag: 0,
+                line,
+            });
+        }
+    }
+    sort_timepoint_by_offset(&mut points);
+    Ok(LidarFrame::new(
+        base_timestamp_sec,
+        base_timestamp_sec + max_offset_sec,
+        points,
+    ))
 }
 
 fn sort_timepoint_by_offset(points: &mut [TimedPoint]) {
@@ -171,6 +323,7 @@ fn is_supported_sensor_schema(schema_name: &str) -> bool {
         "livox_ros_driver2/msg/CustomMsg"
             | "livox_ros_driver/msg/CustomMsg"
             | "sensor_msgs/msg/Imu"
+            | "sensor_msgs/msg/PointCloud2"
     )
 }
 
@@ -337,5 +490,96 @@ mod test {
         assert!(stats.skipped_missing_schema == 0);
         assert!(stats.skipped_unsupported_topic == 0);
         // assert!(stats.skipped_unmonotonic_timestamp == 0);
+    }
+
+    fn pointcloud2_fixture() -> sensor_msgs::msg::PointCloud2 {
+        use sensor_msgs::msg::{PointCloud2, PointField};
+        let fields = vec![
+            PointField {
+                name: "x".into(),
+                offset: 0,
+                datatype: PointField::FLOAT32,
+                count: 1,
+            },
+            PointField {
+                name: "y".into(),
+                offset: 4,
+                datatype: PointField::FLOAT32,
+                count: 1,
+            },
+            PointField {
+                name: "z".into(),
+                offset: 8,
+                datatype: PointField::FLOAT32,
+                count: 1,
+            },
+            PointField {
+                name: "intensity".into(),
+                offset: 12,
+                datatype: PointField::FLOAT32,
+                count: 1,
+            },
+            PointField {
+                name: "time".into(),
+                offset: 16,
+                datatype: PointField::FLOAT32,
+                count: 1,
+            },
+        ];
+        let mut data = Vec::new();
+        for (x, y, z, i, t) in [(1.0f32, 2.0, 3.0, 7.0, 0.01f32), (4.0, 5.0, 6.0, 9.0, 0.02)] {
+            for value in [x, y, z, i, t] {
+                data.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        PointCloud2 {
+            header: std_msgs::msg::Header {
+                stamp: builtin_interfaces::msg::Time {
+                    sec: 100,
+                    nanosec: 500_000_000,
+                },
+                frame_id: "velodyne".into(),
+            },
+            height: 1,
+            width: 2,
+            fields,
+            is_bigendian: false,
+            point_step: 20,
+            row_step: 40,
+            data,
+            is_dense: true,
+        }
+    }
+
+    #[test]
+    fn pointcloud2_decodes_points_and_offsets() {
+        let cloud = pointcloud2_fixture();
+        let bytes = ros2_dispatch::DecodedMessage::SensorMsgsPointCloud2(cloud)
+            .encode_to_vec()
+            .expect("encode");
+        let event = SensorEvent::dispatch(&bytes, "sensor_msgs/msg/PointCloud2").expect("decode");
+        let SensorEvent::Lidar(frame) = event else {
+            panic!("expected lidar frame");
+        };
+        assert!((frame.base_timestamp_sec - 100.5).abs() < 1e-9);
+        assert_eq!(frame.points.len(), 2);
+        assert!((frame.end_timestamp_sec() - 100.52).abs() < 1e-9);
+        assert!((frame.points[0].offset_time_sec - 0.01).abs() < 1e-6);
+        assert!((frame.points[1].offset_time_sec - 0.02).abs() < 1e-6);
+        assert!((frame.points[0].point.x - 1.0).abs() < 1e-6);
+        assert!((frame.points[1].point.z - 6.0).abs() < 1e-6);
+        assert!((frame.points[0].point.intensity - 7.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pointcloud2_without_x_field_is_rejected() {
+        let mut cloud = pointcloud2_fixture();
+        cloud.fields.retain(|field| field.name != "x");
+        let bytes = ros2_dispatch::DecodedMessage::SensorMsgsPointCloud2(cloud)
+            .encode_to_vec()
+            .expect("encode");
+        let error = SensorEvent::dispatch(&bytes, "sensor_msgs/msg/PointCloud2")
+            .expect_err("must reject cloud without x");
+        assert!(error.to_string().contains("x field"), "error: {error}");
     }
 }

@@ -952,6 +952,7 @@ name = "fastlio-dataset"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "builtin_interfaces",
  "camino",
  "fastlio-types",
  "livox_ros_driver2",
@@ -959,6 +960,7 @@ dependencies = [
  "memmap2",
  "ros2-dispatch",
  "sensor_msgs",
+ "std_msgs",
 ]
 
 [[package]]

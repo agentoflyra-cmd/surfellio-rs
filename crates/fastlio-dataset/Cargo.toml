@@ -13,3 +13,7 @@ fastlio-types = { path = "../fastlio-types" }
 livox_ros_driver2 = { path = "../../ros2-msgs/livox_ros_driver2" }
 sensor_msgs = { path = "../../ros2-msgs/sensor_msgs" }
 ros2-dispatch = { path = "../../ros2-msgs/ros2-dispatch" }
+
+[dev-dependencies]
+builtin_interfaces = { path = "../../ros2-msgs/builtin_interfaces" }
+std_msgs = { path = "../../ros2-msgs/std_msgs" }
