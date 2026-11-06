@@ -270,11 +270,17 @@ impl MainPipeline {
             let initialization = self.initializer.finish()?;
             if initialization.gravity_aligned {
                 eprintln!(
-                    "Gravity aligned success: gravity={}, orientation={}, gyro_bias={}, accel_scale={}",
+                    "Gravity aligned success: gravity={}, orientation={}, gyro_bias={}, accel_scale={}, samples={}, accel_cov_max={}",
                     initialization.gravity,
                     initialization.orientation,
                     initialization.gyro_bias,
-                    initialization.accel_scale
+                    initialization.accel_scale,
+                    self.initializer.sample_count,
+                    self.initializer
+                        .cov_accel
+                        .iter()
+                        .copied()
+                        .fold(f64::NEG_INFINITY, f64::max)
                 );
             } else {
                 eprintln!(
