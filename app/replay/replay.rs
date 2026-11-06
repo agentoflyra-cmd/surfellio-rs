@@ -964,6 +964,15 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
                 "    accepted score hist[0-.25,.25-.5,.5-1,1-2,2-4,4-8,8-16,16+]%=[{}]",
                 score_pct.join(",")
             );
+            let age_pct: Vec<String> = c
+                .surfel_age_hist
+                .iter()
+                .map(|&n| format!("{:.1}", n as f64 / accepted * 100.0))
+                .collect();
+            println!(
+                "    accepted surfel age hist[0-1,1-5,5-30,30-120,120-600,600+s]%=[{}]",
+                age_pct.join(",")
+            );
         }
     };
     print_diag("normal", &diag.normal);

@@ -27,6 +27,18 @@ fn residual_bin(residual: f64) -> usize {
     }
 }
 
+/// Index of a surfel age (s) in the 6-bin revisit-layer diagnostic histogram.
+fn age_bin(age_sec: f64) -> usize {
+    match age_sec {
+        a if a < 1.0 => 0,
+        a if a < 5.0 => 1,
+        a if a < 30.0 => 2,
+        a if a < 120.0 => 3,
+        a if a < 600.0 => 4,
+        _ => 5,
+    }
+}
+
 /// Index of a whitened `best_score` in the 8-bin diagnostic histogram.
 fn score_bin(score: f64) -> usize {
     match score {
@@ -93,6 +105,11 @@ pub struct AssocDiagCounters {
     /// Histogram of |point-to-plane residual| (m) for accepted associations:
     /// bins [0,5mm), [5,10mm), [10,20mm), [20,50mm), [50,100mm), [0.1,0.2m), [0.2,0.5m), [0.5m,inf).
     pub residual_hist: [u64; 8],
+    /// Histogram of the accepted surfel's age (current frame time minus its
+    /// creation time), which reveals whether a revisit matches the old map layer
+    /// or the layer it just built itself. Bins: [0,1), [1,5), [5,30), [30,120),
+    /// [120,600), [600,inf) seconds.
+    pub surfel_age_hist: [u64; 6],
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -637,6 +654,10 @@ impl SurfelMap {
             counters.plane_residual_sum += residual;
             counters.residual_hist[residual_bin(residual)] += 1;
             counters.score_hist[score_bin(observation.best_score)] += 1;
+            if let Some(surfel) = self.surfels.get(observation.surfel_id) {
+                let age = (self.time_sec - surfel.created_time_sec).max(0.0);
+                counters.surfel_age_hist[age_bin(age)] += 1;
+            }
             return;
         }
         if self.has_candidate_with(point, 0) {
