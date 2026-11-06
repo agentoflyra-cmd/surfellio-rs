@@ -146,6 +146,10 @@ pub struct SurfelConfig {
     pub merge_queue_limit: usize,
     /// Maximum merge tasks processed per frame (deferred maintenance budget).
     pub maintenance_max_tasks: usize,
+    /// Optional wall-clock budget for one maintenance call in milliseconds. 0
+    /// keeps the task-count budget only; a positive value stops maintenance
+    /// early, bounding its contribution to the frame latency tail.
+    pub maintenance_budget_ms: f32,
     /// Maximum union-find chain depth allowed for a merge (keeps lookups short).
     pub maintenance_max_depth: usize,
     /// Enable proximity-only merging of two growing surfels (growing
@@ -192,6 +196,7 @@ impl Default for SurfelConfig {
             merge_max_distance: 0.6,
             merge_queue_limit: 4096,
             maintenance_max_tasks: 32,
+            maintenance_budget_ms: 0.0,
             maintenance_max_depth: 8,
             merge_growing_enabled: false,
             merge_growing_radius: 0.4,

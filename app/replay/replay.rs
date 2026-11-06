@@ -256,6 +256,9 @@ struct ReplayStats {
     frame_durations_ms: Vec<f64>,
     /// Per-frame filter states for offline drift analysis.
     state_rows: Vec<StateRow>,
+    /// Per-frame deferred-maintenance wall time (ms), parallel to
+    /// `frame_durations_ms`.
+    frame_maintenance_ms: Vec<f32>,
 }
 
 #[derive(Clone)]
@@ -397,6 +400,9 @@ fn process_ready_groups(
         match result {
             Ok(frame_summary) => {
                 stats.processed_frames += 1;
+                stats
+                    .frame_maintenance_ms
+                    .push(frame_summary.maintenance_ms);
                 if config.collect_state {
                     let mut covariance_diag = [0.0_f64; 23];
                     for (index, value) in covariance_diag.iter_mut().enumerate() {
@@ -951,13 +957,16 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
     );
 
     let maintenance = map.maintenance_stats();
+    let maintenance_calls = maintenance.time_calls.max(1);
     println!(
-        "  maintenance: merged_total={} queue_len={} max_chain_depth={} compacted_total={} deleted_total={}",
+        "  maintenance: merged_total={} queue_len={} max_chain_depth={} compacted_total={} deleted_total={} time_avg={:.3}ms time_max={:.3}ms",
         maintenance.merged_total,
         maintenance.queue_len,
         maintenance.max_chain_depth,
         maintenance.compacted_total,
-        maintenance.deleted_total
+        maintenance.deleted_total,
+        maintenance.time_total_ms as f64 / maintenance_calls as f64,
+        maintenance.time_max_ms
     );
 
     let diag = map.assoc_diag_snapshot();
@@ -1024,6 +1033,23 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
             "  frame latency: mean={mean:.3} ms p50={p50:.3} p99={p99:.3} max={max:.3} ({} frames)",
             sorted.len()
         );
+        if !stats.frame_maintenance_ms.is_empty() {
+            let mut maint = stats.frame_maintenance_ms.clone();
+            maint.sort_by(|a, b| a.total_cmp(b));
+            let maint_p99 = maint[(maint.len() * 99 / 100).min(maint.len() - 1)];
+            let maint_max = *maint.last().unwrap_or(&0.0);
+            let over_5ms = maint.iter().filter(|&&v| v > 5.0).count();
+            let top_n = (sorted.len() / 100).max(1);
+            let top_start = sorted.len() - top_n;
+            // sum maintenance of the slowest 1% frames (frame order is lost in
+            // the sorted copy, so report the worst maintenance values instead)
+            let worst_maint: Vec<f32> = maint.iter().rev().take(top_n).copied().collect();
+            let worst_maint_mean = worst_maint.iter().sum::<f32>() / worst_maint.len() as f32;
+            println!(
+                "  maintenance time: p99={maint_p99:.3} ms max={maint_max:.3} ms >5ms_frames={over_5ms} (worst1% mean={worst_maint_mean:.3} ms)"
+            );
+            let _ = top_start;
+        }
     }
 }
 

@@ -106,6 +106,8 @@ impl ImuInitializer {
 #[derive(Debug, Clone, Default)]
 pub struct PipelineFrameSummary {
     pub tracking: bool,
+    /// Wall-clock time spent in deferred map maintenance for this frame (ms).
+    pub maintenance_ms: f32,
 }
 
 /// Patch `group_imu` so that its first and last samples coincide with the
@@ -345,7 +347,7 @@ impl MainPipeline {
         self.map.insert(map_points)?;
         // Deferred map maintenance (coplanar merging) runs on a fixed budget so
         // the scan-to-map hot path stays predictable.
-        self.map.process_maintenance();
+        let maintenance = self.map.process_maintenance();
 
         if let Some(mut export) = self.keyframe_export.take() {
             let index = export.counter;
@@ -359,7 +361,10 @@ impl MainPipeline {
             result?;
         }
 
-        Ok(PipelineFrameSummary { tracking })
+        Ok(PipelineFrameSummary {
+            tracking,
+            maintenance_ms: maintenance.elapsed_ms,
+        })
     }
 
     fn write_keyframe(

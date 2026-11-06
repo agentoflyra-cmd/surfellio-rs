@@ -52,6 +52,14 @@ surfel_config:
     # growing fragments is disabled: it costs accuracy on the long outdoor bags.
     compaction_interval_frames: 256
     delete_growing_enabled: false
+    # Merge backlog cap and per-frame maintenance budget. Measured on upstairs:
+    # 4096/32 is the accuracy optimum (ATE 0.0820); a smaller cap drops merge
+    # candidates (256 -> 0.137, 1024 -> 0.109, 2048 -> 0.098), dropping the
+    # oldest instead of the newest entry when full also hurts (0.0922), and a
+    # larger per-frame budget over-merges (48 -> 0.097, 96 -> 0.153). The cap is
+    # a hard bound: new candidates are dropped while the backlog is full.
+    merge_queue_limit: 4096
+    maintenance_max_tasks: 32
 
 # Iterated-EKF solver. `min_delta_norm` is the norm of the 24-dim error-state
 # correction dx (mixed units: rad, m, m/s, bias, m/s^2), i.e. an

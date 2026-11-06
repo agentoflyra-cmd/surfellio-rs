@@ -72,6 +72,10 @@ pub struct SurfelMap {
     gc_cursor: usize,
     compacted_total: usize,
     deleted_total: usize,
+    /// Wall-clock accounting of deferred maintenance.
+    maintenance_time_total_sec: f64,
+    maintenance_time_max_sec: f64,
+    maintenance_calls: u64,
     /// Association-recall diagnostics (behaviour-neutral; only reads the map).
     assoc_diag: RefCell<AssocDiagSnapshot>,
     diag_query_index: Cell<u64>,
@@ -129,6 +133,12 @@ pub struct MaintenanceStats {
     pub deleted: usize,
     pub compacted_total: usize,
     pub deleted_total: usize,
+    /// Wall-clock time of this maintenance call (ms).
+    pub elapsed_ms: f32,
+    /// Cumulative maintenance time and worst single call (ms).
+    pub time_total_ms: f32,
+    pub time_max_ms: f32,
+    pub time_calls: u64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -266,6 +276,9 @@ impl SurfelMap {
             gc_cursor: 0,
             compacted_total: 0,
             deleted_total: 0,
+            maintenance_time_total_sec: 0.0,
+            maintenance_time_max_sec: 0.0,
+            maintenance_calls: 0,
             assoc_diag: RefCell::new(AssocDiagSnapshot::default()),
             diag_query_index: Cell::new(0),
             diag_frame_probes: Cell::new(0),
@@ -1149,12 +1162,17 @@ impl SurfelMap {
     /// roots per frame, scanning their neighbourhood and merging coplanar
     /// surfels. All neighbour scans and reindexing happen here, off the hot path.
     pub fn process_maintenance(&mut self) -> MaintenanceStats {
+        let started = std::time::Instant::now();
         let mut merged = 0usize;
         if self.surfel_config.merge_enabled {
             let budget = self.surfel_config.maintenance_max_tasks;
             let max_depth = self.surfel_config.maintenance_max_depth;
             let min_mature = self.surfel_config.min_mature_surfel_count;
+            let wall_budget = self.surfel_config.maintenance_budget_ms as f64 / 1000.0;
             for _ in 0..budget {
+                if wall_budget > 0.0 && started.elapsed().as_secs_f64() > wall_budget {
+                    break;
+                }
                 let Some(dirty) = self.merge_queue.pop_front() else {
                     break;
                 };
@@ -1260,6 +1278,10 @@ impl SurfelMap {
             deleted = self.collect_garbage();
             self.deleted_total += deleted;
         }
+        let elapsed_sec = started.elapsed().as_secs_f64();
+        self.maintenance_time_total_sec += elapsed_sec;
+        self.maintenance_time_max_sec = self.maintenance_time_max_sec.max(elapsed_sec);
+        self.maintenance_calls += 1;
         MaintenanceStats {
             merged,
             queue_len: self.merge_queue.len(),
@@ -1269,6 +1291,10 @@ impl SurfelMap {
             deleted,
             compacted_total: self.compacted_total,
             deleted_total: self.deleted_total,
+            elapsed_ms: (elapsed_sec * 1000.0) as f32,
+            time_total_ms: (self.maintenance_time_total_sec * 1000.0) as f32,
+            time_max_ms: (self.maintenance_time_max_sec * 1000.0) as f32,
+            time_calls: self.maintenance_calls,
         }
     }
 
@@ -1365,6 +1391,10 @@ impl SurfelMap {
             deleted: 0,
             compacted_total: self.compacted_total,
             deleted_total: self.deleted_total,
+            elapsed_ms: 0.0,
+            time_total_ms: (self.maintenance_time_total_sec * 1000.0) as f32,
+            time_max_ms: (self.maintenance_time_max_sec * 1000.0) as f32,
+            time_calls: self.maintenance_calls,
         }
     }
 
