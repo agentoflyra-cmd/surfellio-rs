@@ -40,6 +40,15 @@ surfel_config:
     # budget per frame (map maintenance, not trajectory correction).
     growing_association_weight: 0.2
     merge_enabled: true
+    # Deletion strategy (landed): merged-away surfels stay as cheap tombstones
+    # and are physically removed by a periodic compaction pass. Measured on the
+    # four dev bags: duplicate coplanar pairs -12%..-82%, p99 latency lower,
+    # accuracy unchanged. Eager removal at merge time was tried and rejected
+    # (upstairs ATE 0.0784 -> 0.0958, KA e2e 3.60 -> 3.91: removing absorbed
+    # roots early also removes later merge opportunities). Deleting stale
+    # growing fragments is disabled: it costs accuracy on the long outdoor bags.
+    compaction_interval_frames: 256
+    delete_growing_enabled: false
                    
 # publish:
     # path_en:  false
