@@ -1,0 +1,56 @@
+{
+  "bags": {
+    "FR": {
+      "metrics": {
+        "ate": 3.0328282593056017,
+        "compacted": 53213,
+        "duplicates": 294158,
+        "e2e": 4.274411146783212,
+        "latency_mean": 36.084,
+        "latency_p50": 33.791,
+        "latency_p99": 85.675,
+        "merged": 59069,
+        "surfels": 511390
+      }
+    },
+    "KA": {
+      "metrics": {
+        "ate": 3.8313816543133696,
+        "compacted": 264067,
+        "duplicates": 647926,
+        "e2e": 3.537232703504117,
+        "latency_mean": 64.937,
+        "latency_p50": 62.825,
+        "latency_p99": 139.679,
+        "merged": 268286,
+        "surfels": 2958081
+      }
+    },
+    "upstairs": {
+      "metrics": {
+        "ate": 0.08202902426167251,
+        "compacted": 25428,
+        "duplicates": 24280,
+        "latency_mean": 13.511,
+        "latency_p50": 11.755,
+        "latency_p99": 32.887,
+        "merged": 27978,
+        "surfels": 40184,
+        "z_rmse": 0.028710027631263967
+      }
+    },
+    "yuanqu": {
+      "metrics": {
+        "ate": 0.15180285678947814,
+        "compacted": 25309,
+        "duplicates": 425912,
+        "latency_mean": 48.44,
+        "latency_p50": 43.304,
+        "latency_p99": 124.162,
+        "merged": 25488,
+        "surfels": 1317064,
+        "z_rmse": 0.11434431208004582
+      }
+    }
+  }
+}

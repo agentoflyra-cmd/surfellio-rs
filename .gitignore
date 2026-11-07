@@ -4,3 +4,6 @@
 /dataset
 /output
 /outputs
+
+__pycache__/
+*.pyc

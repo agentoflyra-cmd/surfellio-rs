@@ -22,10 +22,6 @@ pub mod trajectory;
 /// inside a typical standstill.
 const INIT_MIN_STATIC_SAMPLES: usize = 150;
 
-/// Motion checks are skipped for the first few samples because the running
-/// mean is still being seeded.
-const INIT_MOTION_CHECK_START: usize = 10;
-
 /// Motion detection uses short-window means so that single-sample vibration
 /// spikes do not count as motion while a sustained acceleration does.
 const INIT_MOTION_WINDOW: usize = 60;
