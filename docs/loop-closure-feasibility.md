@@ -144,3 +144,17 @@ upstairs 0.0820 不变，yuanqu 0.108→0.102。
 后续若要继续压：需要更多可信 loop 对应（纯 LiDAR 多候选一致性），或完整 6-DoF
 相机-LiDAR 外参（当前 hand-eye / 单帧 ICP 尝试均未得到可信外参），再重跑多锚点
 变形图。
+
+### 真正 GICP（plane-to-plane）尝试（corridor_04）
+
+为了验证“更强配准”能否解决走廊多帧不一致，给 surfel dump 增加了协方差特征值
+导出（`l0,l1,l2`），并用 plane-to-plane GICP（C = C_point + C_surfel 加权、
+Huber、步长限制）重跑回访段注册：
+
+- 协方差必须用特征向量重建；dump 没有导出特征向量，只能由法向构造切向基，
+  少数退化法向会得到 NaN 协方差（加了 guard）；
+- 结果：13 个回访 keyframe 的相对平移在 0.16–1.37 m 间跳变、旋转 0.7–8°，
+  比原来的 point-to-plane 原型（0.67–1.18 m、0.3–1.6°，单调变化）更不稳定；
+- 结论：真正 GICP 在当前协方差近似和走廊几何下没有带来改善，与预期一致。
+  纯 LiDAR 的突破点更可能在 submap-to-submap 或特征/结构约束，而不是继续换
+  配准核函数。

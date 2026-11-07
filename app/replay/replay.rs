@@ -862,7 +862,7 @@ fn write_surfel_dump(path: &Utf8PathBuf, map: &SurfelMap, stride: usize) -> Resu
     let mut writer = BufWriter::new(file);
     writeln!(
         writer,
-        "x,y,z,nx,ny,nz,count,created_time_sec,last_observed_time_sec"
+        "x,y,z,nx,ny,nz,count,created_time_sec,last_observed_time_sec,l0,l1,l2"
     )?;
     let stride = stride.max(1);
     let mut written = 0usize;
@@ -873,7 +873,7 @@ fn write_surfel_dump(path: &Utf8PathBuf, map: &SurfelMap, stride: usize) -> Resu
         let normal = surfel.eigenvectors.column(0);
         writeln!(
             writer,
-            "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6}",
+            "{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{},{:.6},{:.6},{:.9},{:.9},{:.9}",
             surfel.mean_w.x,
             surfel.mean_w.y,
             surfel.mean_w.z,
@@ -882,7 +882,10 @@ fn write_surfel_dump(path: &Utf8PathBuf, map: &SurfelMap, stride: usize) -> Resu
             normal.z,
             surfel.count,
             surfel.created_time_sec,
-            surfel.last_observed_time_sec
+            surfel.last_observed_time_sec,
+            surfel.eigenvalues.x,
+            surfel.eigenvalues.y,
+            surfel.eigenvalues.z
         )?;
         written += 1;
     }
