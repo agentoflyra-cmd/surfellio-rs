@@ -16,13 +16,79 @@ pub mod deskew;
 pub mod synchronizer;
 pub mod trajectory;
 
+/// Minimum number of static samples accepted before a motion-triggered early
+/// initialization may finish. 150 samples is 0.15 s at 1 kHz / 0.375 s at
+/// 400 Hz, enough for a usable gravity direction while keeping the window well
+/// inside a typical standstill.
+const INIT_MIN_STATIC_SAMPLES: usize = 150;
+
+/// Motion checks are skipped for the first few samples because the running
+/// mean is still being seeded.
+const INIT_MOTION_CHECK_START: usize = 10;
+
+/// Motion detection uses short-window means so that single-sample vibration
+/// spikes do not count as motion while a sustained acceleration does.
+const INIT_MOTION_WINDOW: usize = 60;
+/// Check motion only after the static mean is reasonably seeded.
+const INIT_MOTION_MIN_SAMPLES: usize = 300;
+/// Windowed-mean deviation from the static mean that counts as motion.
+const INIT_MOTION_ACCEL_THRESHOLD: f64 = 0.35; // m/s^2
+const INIT_MOTION_GYRO_THRESHOLD: f64 = 0.04; // rad/s
+/// Number of consecutive samples with a deviating window before motion is
+/// declared.
+const INIT_MOTION_RUN: usize = 5;
+/// Individual samples with an extreme deviation are skipped as outliers
+/// (vibration spikes) even before motion is declared.
+const INIT_OUTLIER_ACCEL_THRESHOLD: f64 = 3.0; // m/s^2
+
+/// Static-window acceptance threshold: accel variance relative to |g|^2. The
+/// old value (0.02) accepted windows containing real motion; static IMUs sit
+/// around 1e-5..2e-3 depending on vibration/noise.
+const INIT_STATIC_REL_VARIANCE: f64 = 3.0e-3;
+
 #[derive(Default)]
 pub struct ImuInitializer {
+    /// Running gyro mean (misnamed historically: used as `gyro_bias`).
     pub mean_gravity: Vec3<f64>,
     pub mean_accel: Vec3<f64>,
     pub group_count: usize,
+    /// Number of samples actually used (frozen once motion is detected).
     pub sample_count: usize,
     pub cov_accel: Vec3<f64>,
+    /// Set once a sustained deviation from the static mean is observed; later
+    /// samples are not accumulated so the initialization keeps the still
+    /// prefix instead of averaging in motion.
+    pub motion_detected: bool,
+    /// Motion detection candidates seen in a row.
+    motion_run: usize,
+    /// Ring buffers of recent accel/gyro samples for windowed motion detection.
+    recent_accel: std::collections::VecDeque<Vec3<f64>>,
+    recent_gyro: std::collections::VecDeque<Vec3<f64>>,
+    /// Raw samples taken so far, used to roll the statistics back to the
+    /// motion-free prefix when motion is detected.
+    all_accel: Vec<Vec3<f64>>,
+    all_gyro: Vec<Vec3<f64>>,
+}
+
+impl ImuInitializer {
+    /// Max accel variance relative to the mean amplitude, used both by
+    /// `finish` and by the pipeline logging.
+    pub fn relative_accel_variance(&self) -> f64 {
+        let acc_norm = self.mean_accel.norm();
+        if acc_norm <= 1e-6 {
+            return f64::INFINITY;
+        }
+        self.cov_accel
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max)
+            / acc_norm.powi(2)
+    }
+
+    /// True when initialization can finish early with the still prefix.
+    pub fn has_enough_static_samples(&self) -> bool {
+        self.motion_detected && self.sample_count >= INIT_MIN_STATIC_SAMPLES
+    }
 }
 
 #[derive(Debug)]
@@ -44,18 +110,83 @@ struct ImuInitialization {
 }
 
 impl ImuInitializer {
+    fn push_sample(&mut self, accel: Vec3<f64>, gyro: Vec3<f64>) {
+        self.sample_count += 1;
+        let n = self.sample_count as f64;
+        let delta = accel - self.mean_accel;
+        self.mean_accel += delta / n;
+        let delta2 = accel - self.mean_accel;
+        self.cov_accel =
+            self.cov_accel * (n - 1.0) / n + delta2.component_mul(&delta2) * (n - 1.0) / (n * n);
+        self.mean_gravity += (gyro - self.mean_gravity) / n;
+    }
+
+    /// Drop the recent motion window and rebuild the statistics from the
+    /// motion-free prefix only.
+    fn freeze_static_prefix(&mut self) {
+        let clean = self.all_accel.len().saturating_sub(INIT_MOTION_WINDOW);
+        self.sample_count = 0;
+        self.mean_accel = Vec3::zeros();
+        self.mean_gravity = Vec3::zeros();
+        self.cov_accel = Vec3::zeros();
+        for i in 0..clean {
+            self.push_sample(self.all_accel[i], self.all_gyro[i]);
+        }
+        self.recent_accel.clear();
+        self.recent_gyro.clear();
+        self.motion_detected = true;
+    }
+
     pub fn accumulate(&mut self, imu_samples: &[ImuSample]) {
         self.group_count += 1;
-        imu_samples.iter().for_each(|imu_sample| {
-            self.sample_count += 1;
-            let n = self.sample_count as f64;
-            let delta = imu_sample.accel - self.mean_accel;
-            self.mean_accel += delta / n;
-            let delta2 = imu_sample.accel - self.mean_accel;
-            self.cov_accel = self.cov_accel * (n - 1.0) / n
-                + delta2.component_mul(&delta2) * (n - 1.0) / (n * n);
-            self.mean_gravity += (imu_sample.gyro - self.mean_gravity) / n;
-        });
+        for imu_sample in imu_samples {
+            if self.motion_detected {
+                return;
+            }
+            // Skip only extreme single-sample vibration spikes; sustained
+            // motion is handled by the windowed check below.
+            if self.sample_count >= INIT_MOTION_MIN_SAMPLES
+                && (imu_sample.accel - self.mean_accel).norm() > INIT_OUTLIER_ACCEL_THRESHOLD
+            {
+                continue;
+            }
+            self.all_accel.push(imu_sample.accel);
+            self.all_gyro.push(imu_sample.gyro);
+            self.push_sample(imu_sample.accel, imu_sample.gyro);
+            self.recent_accel.push_back(imu_sample.accel);
+            self.recent_gyro.push_back(imu_sample.gyro);
+            if self.recent_accel.len() > INIT_MOTION_WINDOW {
+                self.recent_accel.pop_front();
+                self.recent_gyro.pop_front();
+            }
+            if self.sample_count >= INIT_MOTION_MIN_SAMPLES
+                && self.recent_accel.len() == INIT_MOTION_WINDOW
+            {
+                let mut accel_mean = Vec3::zeros();
+                let mut gyro_mean = Vec3::zeros();
+                for value in &self.recent_accel {
+                    accel_mean += value;
+                }
+                for value in &self.recent_gyro {
+                    gyro_mean += value;
+                }
+                accel_mean /= INIT_MOTION_WINDOW as f64;
+                gyro_mean /= INIT_MOTION_WINDOW as f64;
+                let accel_deviation = (accel_mean - self.mean_accel).norm();
+                let gyro_deviation = (gyro_mean - self.mean_gravity).norm();
+                if accel_deviation > INIT_MOTION_ACCEL_THRESHOLD
+                    || gyro_deviation > INIT_MOTION_GYRO_THRESHOLD
+                {
+                    self.motion_run += 1;
+                    if self.motion_run >= INIT_MOTION_RUN {
+                        self.freeze_static_prefix();
+                        return;
+                    }
+                } else {
+                    self.motion_run = 0;
+                }
+            }
+        }
     }
 
     pub(crate) fn finish(&mut self) -> Result<ImuInitialization> {
@@ -68,14 +199,9 @@ impl ImuInitializer {
         }
 
         let acc_unit = self.mean_accel / acc_norm;
-        let acc_cov_max = self
-            .cov_accel
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
         // Compare variance relative to mean gravity so that IMUs reporting
         // acceleration in g and m/s² get the same stationary decision.
-        if acc_cov_max / acc_norm.powi(2) <= 0.02 {
+        if self.relative_accel_variance() <= INIT_STATIC_REL_VARIANCE {
             let rotation_between =
                 Rotation3::rotation_between(&acc_unit, &Vec3::new(0.0, 0.0, 1.0))
                     .expect("mean_acc is non-zero by construction.");
@@ -263,14 +389,15 @@ impl MainPipeline {
 
         if !self.initialized {
             self.initializer.accumulate(&imu_for_initialize);
-            if self.initializer.group_count < self.inital_group_count {
+            let enough_groups = self.initializer.group_count >= self.inital_group_count;
+            if !enough_groups && !self.initializer.has_enough_static_samples() {
                 return Ok(PipelineFrameSummary::default());
             }
 
             let initialization = self.initializer.finish()?;
             if initialization.gravity_aligned {
                 eprintln!(
-                    "Gravity aligned success: gravity={}, orientation={}, gyro_bias={}, accel_scale={}, samples={}, accel_cov_max={}",
+                    "Gravity aligned success: gravity={}, orientation={}, gyro_bias={}, accel_scale={}, samples={}, accel_cov_max={}, motion_detected={}, rel_var={:.3e} (limit {:.1e})",
                     initialization.gravity,
                     initialization.orientation,
                     initialization.gyro_bias,
@@ -280,15 +407,21 @@ impl MainPipeline {
                         .cov_accel
                         .iter()
                         .copied()
-                        .fold(f64::NEG_INFINITY, f64::max)
+                        .fold(f64::NEG_INFINITY, f64::max),
+                    self.initializer.motion_detected,
+                    self.initializer.relative_accel_variance(),
+                    INIT_STATIC_REL_VARIANCE
                 );
             } else {
                 eprintln!(
-                    "Gravity aligned skipped: gravity={}, orientation={}, gyro_bias={}, accel_scale={}",
+                    "Gravity aligned skipped (moving window): gravity={}, orientation={}, gyro_bias={}, accel_scale={}, samples={}, rel_var={:.3e} (limit {:.1e})",
                     initialization.gravity,
                     initialization.orientation,
                     initialization.gyro_bias,
-                    initialization.accel_scale
+                    initialization.accel_scale,
+                    self.initializer.sample_count,
+                    self.initializer.relative_accel_variance(),
+                    INIT_STATIC_REL_VARIANCE
                 );
             }
             self.initialized = true;
@@ -645,5 +778,67 @@ mod tests {
         for index in 17..23 {
             assert!(approx_eq(covariance[(index, index)], 1.0e-5, 1e-15));
         }
+    }
+
+    #[test]
+    fn initializer_freezes_the_static_prefix_when_motion_starts() {
+        let mut init = ImuInitializer::default();
+        let static_samples: Vec<_> = (0..200)
+            .map(|_| imu(0.0, (0.001, -0.009, -0.003), (0.0, 0.0, 9.8)))
+            .collect();
+        let moving_samples: Vec<_> = (0..100)
+            .map(|_| imu(0.0, (0.001, -0.009, -0.003), (1.5, 0.0, 9.8)))
+            .collect();
+        for chunk in static_samples.chunks(10).chain(moving_samples.chunks(10)) {
+            init.accumulate(chunk);
+        }
+        assert!(init.motion_detected, "motion onset must be detected");
+        assert!(
+            init.sample_count >= 150 && init.sample_count <= 220,
+            "static prefix must keep a usable number of samples (got {})",
+            init.sample_count
+        );
+        assert!(
+            init.mean_accel.x.abs() < 0.05,
+            "static mean accel x contaminated: {}",
+            init.mean_accel.x
+        );
+        assert!(init.has_enough_static_samples());
+        let initialization = init.finish().unwrap();
+        assert!(initialization.gravity_aligned);
+        assert!((initialization.gyro_bias.x - 0.001).abs() < 1e-6);
+    }
+
+    #[test]
+    fn initializer_skips_alignment_on_a_moving_window() {
+        let mut init = ImuInitializer::default();
+        // Alternating horizontal acceleration: large variance around the mean.
+        let samples: Vec<_> = (0..400)
+            .map(|i| {
+                let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+                imu(0.0, (0.0, 0.0, 0.0), (2.0 * sign, 0.0, 9.8))
+            })
+            .collect();
+        for chunk in samples.chunks(20) {
+            init.accumulate(chunk);
+        }
+        let initialization = init.finish().unwrap();
+        assert!(!initialization.gravity_aligned);
+    }
+
+    #[test]
+    fn initializer_waits_for_the_configured_group_count_while_static() {
+        let mut init = ImuInitializer::default();
+        let samples: Vec<_> = (0..200)
+            .map(|_| imu(0.0, (0.0, 0.0, 0.0), (0.0, 0.0, 9.8)))
+            .collect();
+        for chunk in samples.chunks(20) {
+            init.accumulate(chunk);
+        }
+        assert!(!init.motion_detected);
+        assert!(!init.has_enough_static_samples());
+        assert_eq!(init.group_count, 10);
+        let initialization = init.finish().unwrap();
+        assert!(initialization.gravity_aligned);
     }
 }

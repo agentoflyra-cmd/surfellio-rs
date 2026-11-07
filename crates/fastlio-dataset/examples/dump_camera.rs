@@ -43,7 +43,7 @@ fn main() -> Result<()> {
         let counter = per_topic.entry(topic.to_string()).or_insert(0);
         *counter += 1;
         let dumped = *counter;
-        if dumped % stride != 0 {
+        if dumped != 1 && dumped % stride != 0 {
             continue;
         }
         let Some(schema) = message.channel.schema.as_ref() else {
