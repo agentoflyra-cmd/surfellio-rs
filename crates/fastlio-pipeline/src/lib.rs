@@ -779,10 +779,13 @@ mod tests {
     #[test]
     fn initializer_freezes_the_static_prefix_when_motion_starts() {
         let mut init = ImuInitializer::default();
-        let static_samples: Vec<_> = (0..200)
+        // Motion detection only starts after INIT_MOTION_MIN_SAMPLES and needs
+        // a full detection window plus consecutive checks, so the fixture keeps
+        // a long still prefix and a long moving tail.
+        let static_samples: Vec<_> = (0..400)
             .map(|_| imu(0.0, (0.001, -0.009, -0.003), (0.0, 0.0, 9.8)))
             .collect();
-        let moving_samples: Vec<_> = (0..100)
+        let moving_samples: Vec<_> = (0..300)
             .map(|_| imu(0.0, (0.001, -0.009, -0.003), (1.5, 0.0, 9.8)))
             .collect();
         for chunk in static_samples.chunks(10).chain(moving_samples.chunks(10)) {
@@ -790,7 +793,7 @@ mod tests {
         }
         assert!(init.motion_detected, "motion onset must be detected");
         assert!(
-            init.sample_count >= 150 && init.sample_count <= 220,
+            init.sample_count >= INIT_MIN_STATIC_SAMPLES && init.sample_count <= 420,
             "static prefix must keep a usable number of samples (got {})",
             init.sample_count
         );
