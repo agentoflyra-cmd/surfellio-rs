@@ -246,6 +246,8 @@ pub struct PipelineFrameSummary {
     pub map_insert_ms: f32,
     pub iekf_assoc_ms: f32,
     pub iekf_solve_ms: f32,
+    pub assoc_changed: usize,
+    pub assoc_total: usize,
 }
 
 /// Patch `group_imu` so that its first and last samples coincide with the
@@ -539,6 +541,8 @@ impl MainPipeline {
             map_insert_ms,
             iekf_assoc_ms: self.filter.last_assoc_ms,
             iekf_solve_ms: self.filter.last_solve_ms,
+            assoc_changed: self.filter.last_assoc_changed,
+            assoc_total: self.filter.last_assoc_total,
         })
     }
 

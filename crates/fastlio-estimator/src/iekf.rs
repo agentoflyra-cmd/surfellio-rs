@@ -2,7 +2,7 @@ use crate::{
     optimizer::{build_surfel_observation, symmetric},
     skew,
 };
-use fastlio_map::surfel::SurfelMap;
+use fastlio_map::surfel::{SurfelMap, SurfelObservation};
 use fastlio_types::{
     LidarImuExtrinsic, Mat2, Mat3, Mat32, NavState, PointXYZI, Vec2, Vec3, gravity_tangent_basis,
 };
@@ -143,6 +143,11 @@ pub struct IekfState {
     pub last_assoc_ms: f32,
     /// Time in linear_update, accumulated over iterations (ms).
     pub last_solve_ms: f32,
+    /// Diagnostic (FASTLIO_ASSOC_CHANGE_DIAG=1): correspondence changes
+    /// between the first and the final IEKF iteration.
+    pub last_assoc_changed: usize,
+    /// Diagnostic: total points considered for the correspondence check.
+    pub last_assoc_total: usize,
 }
 
 impl Default for IekfState {
@@ -156,6 +161,8 @@ impl Default for IekfState {
             last_iterations: 0,
             last_assoc_ms: 0.0,
             last_solve_ms: 0.0,
+            last_assoc_changed: 0,
+            last_assoc_total: 0,
         }
     }
 }
@@ -236,6 +243,8 @@ impl IekfState {
             last_iterations: 0,
             last_assoc_ms: 0.0,
             last_solve_ms: 0.0,
+            last_assoc_changed: 0,
+            last_assoc_total: 0,
         })
     }
     pub fn update(
@@ -257,6 +266,18 @@ impl IekfState {
 
         let mut final_error = SVector::zeros();
 
+        let assoc_change_diag = std::env::var("FASTLIO_ASSOC_CHANGE_DIAG").is_ok();
+        let ids_before = if assoc_change_diag {
+            Some(crate::optimizer::associate_surfel_ids(
+                &state_prior, points, map, extrinsic, config,
+            )?)
+        } else {
+            None
+        };
+        // Association reuse is on by default; set FASTLIO_ASSOC_REUSE=0 to
+        // disable it (A/B comparisons / debugging).
+        let assoc_reuse = std::env::var("FASTLIO_ASSOC_REUSE").map_or(true, |v| v != "0");
+        let mut assoc_cache: Vec<Option<SurfelObservation>> = Vec::new();
         let mut iterations = 0usize;
         let mut assoc_ms = 0.0f32;
         let mut solve_ms = 0.0f32;
@@ -264,6 +285,7 @@ impl IekfState {
             iterations = iter + 1;
             assoc_stats = AssocGeometryStats::default();
             let t_assoc = std::time::Instant::now();
+            let reuse = assoc_reuse && iter > 0;
             build_surfel_observation(
                 &state_iter,
                 points,
@@ -272,6 +294,8 @@ impl IekfState {
                 config,
                 &mut observations,
                 &mut assoc_stats,
+                if assoc_reuse { Some(&mut assoc_cache) } else { None },
+                reuse,
             )?;
             assoc_ms += t_assoc.elapsed().as_secs_f32() * 1000.0;
             let observations_len = observations.len();
@@ -304,6 +328,20 @@ impl IekfState {
             }
         }
 
+        if let Some(before) = ids_before {
+            let after = crate::optimizer::associate_surfel_ids(
+                &state_iter, points, map, extrinsic, config,
+            )?;
+            self.last_assoc_total = before.len();
+            self.last_assoc_changed = before
+                .iter()
+                .zip(after.iter())
+                .filter(|(a, b)| a != b)
+                .count();
+        } else {
+            self.last_assoc_total = 0;
+            self.last_assoc_changed = 0;
+        }
         self.state = state_iter;
         self.gravity_basis = gravity_basis_iter;
         self.covariance = reset_covariance(&p_final, &final_error);

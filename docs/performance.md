@@ -41,3 +41,27 @@ not change which root wins anyway) gives:
 | Spires after | **11.23 ms** | 17.83 ms | **81.38 ms** |
 
 Remaining frame cost is dominated by association (~60 ms on Spires).
+
+## Cross-iteration association reuse
+
+The first IEKF iteration caches the associated `SurfelObservation` for every
+point. Later iterations keep re-linearising (new pose -> new residual and
+Jacobian) but reuse the cached correspondence; a point is re-queried only when
+its plane residual exceeds 0.10 m, and cached misses are always re-queried so
+recall cannot drop. Controlled by `FASTLIO_ASSOC_REUSE` (on by default, `=0`
+disables).
+
+Measured correspondence-change rate (first vs final iteration, diagnostic mode):
+corridor_04 2.44%, Spires 3.65%.
+
+| Spires (7958 frames) | baseline | reuse |
+|---|---:|---:|
+| IEKF association | 59.74 ms | **34.72 ms** |
+| IEKF update | 64.80 ms | 39.79 ms |
+| frame total | 80.65 ms | **56.03 ms** |
+| IEKF iterations | 1.83 | 1.84 |
+| surfels | 1,276,645 | 1,278,179 |
+| ATE vs hba reference | 0.966 m | **0.947 m** |
+| loop gap (horizontal) | 1.963 m | 1.995 m |
+
+Trajectory difference baseline vs reuse: median 5.1 cm / p90 7.8 cm / max 9.2 cm.

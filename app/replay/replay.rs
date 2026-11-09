@@ -284,6 +284,9 @@ struct ReplayStats {
     frame_stage_ms: Vec<[f32; 5]>,
     /// IEKF internal split: association and linear solve (ms).
     frame_iekf_split_ms: Vec<[f32; 2]>,
+    /// Diagnostic: correspondence changes between first/final IEKF iteration.
+    assoc_changed: usize,
+    assoc_total: usize,
 }
 
 #[derive(Clone)]
@@ -441,6 +444,8 @@ fn process_ready_groups(
                 stats
                     .frame_iekf_iterations
                     .push(frame_summary.iekf_iterations);
+                stats.assoc_changed += frame_summary.assoc_changed;
+                stats.assoc_total += frame_summary.assoc_total;
                 stats.frame_iekf_split_ms.push([
                     frame_summary.iekf_assoc_ms,
                     frame_summary.iekf_solve_ms,
@@ -1147,6 +1152,13 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
                     let p99 = values[(values.len() * 99 / 100).min(values.len() - 1)];
                     println!("  iekf {name}: mean={mean:.3} ms p99={p99:.3} ms");
                 }
+            }
+            if stats.assoc_total > 0 {
+                let frac = stats.assoc_changed as f64 / stats.assoc_total as f64;
+                println!(
+                    "  assoc change diag: changed={} total={} frac={frac:.4}",
+                    stats.assoc_changed, stats.assoc_total
+                );
             }
             if !stats.frame_iekf_iterations.is_empty() {
                 let mut iters = stats.frame_iekf_iterations.clone();

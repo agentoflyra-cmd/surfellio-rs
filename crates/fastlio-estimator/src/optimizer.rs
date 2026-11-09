@@ -2,7 +2,7 @@ use crate::{
     iekf::{AssocGeometryStats, box_minus, gravity_box_plus},
     linearized_point_to_surfel_observation, skew,
 };
-use fastlio_map::surfel::SurfelMap;
+use fastlio_map::surfel::{SurfelMap, SurfelObservation};
 use fastlio_types::{LidarImuExtrinsic, Mat2, Mat3, Mat32, NavState, PointXYZI, Vec2, Vec3};
 use nalgebra::{SMatrix, SVector};
 
@@ -19,6 +19,9 @@ pub enum IekfUpdateError {
 pub enum LinearizedObservation {
     Surfel(SurfelLinearizedObservation),
 }
+
+/// Plane residual (m) above which a cached correspondence is re-queried.
+const REASSOC_PLANE_RESIDUAL_M: f64 = 0.10;
 
 #[derive(Debug, Clone)]
 pub struct SurfelLinearizedObservation {
@@ -62,12 +65,119 @@ pub(crate) fn build_surfel_observation(
     config: &IekfConfig,
     out: &mut Vec<LinearizedObservation>,
     stats: &mut AssocGeometryStats,
+    mut cache: Option<&mut Vec<Option<SurfelObservation>>>,
+    reuse: bool,
 ) -> Result<(), IekfUpdateError> {
     out.clear();
     let association_point_covariance_w =
         point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
     let measurement_point_covariance_w =
         point_covariance_w(state, extrinsic, &config.measurement_point_covariance_l);
+    if let Some(c) = cache.as_deref_mut()
+        && c.len() != points.len()
+    {
+        c.clear();
+        c.resize_with(points.len(), || None);
+    }
+    for (index, point) in points.iter().enumerate() {
+        let point_i = extrinsic.transform_point(&point.to_vec3_f64());
+        let point_w_vec = transform_point(state, &point_i);
+        let point_w = PointXYZI {
+            x: point_w_vec.x as f32,
+            y: point_w_vec.y as f32,
+            z: point_w_vec.z as f32,
+            intensity: point.intensity,
+        };
+        let point_i_small = PointXYZI {
+            x: point_i.x as f32,
+            y: point_i.y as f32,
+            z: point_i.z as f32,
+            intensity: point.intensity,
+        };
+
+        let query = |map: &SurfelMap| -> Result<Option<SurfelObservation>, IekfUpdateError> {
+            map.query_surfel(&point_w, association_point_covariance_w)
+                .map_err(|e| IekfUpdateError::MapQueryFailed {
+                    context: e.to_string(),
+                })
+        };
+
+        // Reuse the correspondence cached by the previous iteration unless the
+        // point has drifted far from the cached plane (its nearest surfel may
+        // have changed); cached misses are always re-queried so recall does not
+        // degrade.
+        let cached = if reuse {
+            cache
+                .as_deref_mut()
+                .and_then(|c| c.get_mut(index).and_then(|slot| slot.take()))
+        } else {
+            None
+        };
+        let observation = match cached {
+            Some(obs) => {
+                let normal = obs.eigenvectors.column(0);
+                let plane_residual = (point_w_vec - obs.mean_w).dot(&normal);
+                if plane_residual.abs() > REASSOC_PLANE_RESIDUAL_M {
+                    query(map)?
+                } else {
+                    Some(obs)
+                }
+            }
+            None => query(map)?,
+        };
+        let Some(obs) = observation else {
+            if let Some(c) = cache.as_deref_mut()
+                && let Some(slot) = c.get_mut(index)
+            {
+                *slot = None;
+            }
+            continue;
+        };
+        let confidence_inflation = 1.0 / obs.confidence.clamp(1.0e-6, 1.0);
+        let measurement_covariance =
+            (obs.covariance_w + measurement_point_covariance_w) * confidence_inflation;
+        let jacobian = linearized_point_to_surfel_observation(state, &point_i_small, &obs);
+        let residual = point_w_vec - obs.mean_w;
+        let (whiten_residual, whiten_jacobian) =
+            whiten_surfel_measurement(&measurement_covariance, &residual, &jacobian)?;
+        let normal_w = obs.eigenvectors.column(0);
+        let nz = normal_w.z;
+        stats.observations += 1;
+        if nz.abs() > 0.8 {
+            stats.ground_observations += 1;
+        } else {
+            stats.wall_observations += 1;
+        }
+        stats.z_information += nz * nz;
+        stats.horizontal_information += 1.0 - nz * nz;
+        out.push(LinearizedObservation::Surfel(SurfelLinearizedObservation {
+            residual: whiten_residual,
+            jacobian: whiten_jacobian,
+        }));
+        if let Some(c) = cache.as_deref_mut()
+            && let Some(slot) = c.get_mut(index)
+        {
+            *slot = Some(obs);
+        }
+    }
+    Ok(())
+}
+
+/// Diagnostic only: per-point associated surfel ids at the given state.
+///
+/// Used to measure how many correspondences change between the first and the
+/// final IEKF iteration (a prerequisite for reusing associations across
+/// iterations). Not on the normal hot path.
+pub(crate) fn associate_surfel_ids(
+    state: &NavState,
+    points: &[PointXYZI],
+    map: &SurfelMap,
+    extrinsic: &LidarImuExtrinsic,
+    config: &IekfConfig,
+) -> Result<Vec<Option<fastlio_map::surfel::SurfelID>>, IekfUpdateError> {
+    let covariance_w =
+        point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
+    let mut ids = Vec::with_capacity(points.len());
     for point in points {
         let point_i = extrinsic.transform_point(&point.to_vec3_f64());
         let point_w_vec = transform_point(state, &point_i);
@@ -77,47 +187,14 @@ pub(crate) fn build_surfel_observation(
             z: point_w_vec.z as f32,
             intensity: point.intensity,
         };
-        let point_i = PointXYZI {
-            x: point_i.x as f32,
-            y: point_i.y as f32,
-            z: point_i.z as f32,
-            intensity: point.intensity,
-        };
-
         let observation = map
-            .query_surfel(&point_w, association_point_covariance_w)
+            .query_surfel(&point_w, covariance_w)
             .map_err(|e| IekfUpdateError::MapQueryFailed {
                 context: e.to_string(),
             })?;
-        if let Some(obs) = observation {
-            // Growing surfels may take part with a confidence below 1: inflate
-            // the measurement covariance by 1/confidence so their residual is
-            // down-weighted by sqrt(confidence) in the IEKF update.
-            let confidence_inflation = 1.0 / obs.confidence.clamp(1.0e-6, 1.0);
-            let measurement_covariance =
-                (obs.covariance_w + measurement_point_covariance_w) * confidence_inflation;
-            let jacobian = linearized_point_to_surfel_observation(state, &point_i, &obs);
-            let residual = point_w_vec - obs.mean_w;
-            let (whiten_residual, whiten_jacobian) =
-                whiten_surfel_measurement(&measurement_covariance, &residual, &jacobian)?;
-            let normal_w = obs.eigenvectors.column(0);
-            let nz = normal_w.z;
-            stats.observations += 1;
-            if nz.abs() > 0.8 {
-                stats.ground_observations += 1;
-            } else {
-                stats.wall_observations += 1;
-            }
-            stats.z_information += nz * nz;
-            stats.horizontal_information += 1.0 - nz * nz;
-            let surfel_linearized_observation = SurfelLinearizedObservation {
-                residual: whiten_residual,
-                jacobian: whiten_jacobian,
-            };
-            out.push(LinearizedObservation::Surfel(surfel_linearized_observation));
-        }
+        ids.push(observation.map(|obs| obs.surfel_id));
     }
-    Ok(())
+    Ok(ids)
 }
 
 /// Whiten one associated surfel residual using its full measurement covariance.
@@ -384,6 +461,7 @@ mod tests {
         };
 
         let mut narrow_measurement = Vec::new();
+        let mut narrow_stats = AssocGeometryStats::default();
         build_surfel_observation(
             &state,
             &points,
@@ -391,6 +469,9 @@ mod tests {
             &extrinsic,
             &base,
             &mut narrow_measurement,
+            &mut narrow_stats,
+            None,
+            false,
         )
         .unwrap();
         assert_eq!(narrow_measurement.len(), 1);
@@ -399,6 +480,7 @@ mod tests {
         wide_measurement_config.measurement_point_covariance_l =
             Mat3::identity() * 0.15_f64.powi(2);
         let mut wide_measurement = Vec::new();
+        let mut wide_stats = AssocGeometryStats::default();
         build_surfel_observation(
             &state,
             &points,
@@ -406,6 +488,9 @@ mod tests {
             &extrinsic,
             &wide_measurement_config,
             &mut wide_measurement,
+            &mut wide_stats,
+            None,
+            false,
         )
         .unwrap();
         assert_eq!(wide_measurement.len(), 1);
@@ -976,6 +1061,12 @@ mod tests {
             state: prior.clone(),
             gravity_basis: fastlio_types::gravity_tangent_basis(&prior.gravity),
             covariance,
+            last_association: AssocGeometryStats::default(),
+            last_iterations: 0,
+            last_assoc_ms: 0.0,
+            last_solve_ms: 0.0,
+            last_assoc_changed: 0,
+            last_assoc_total: 0,
         };
         let extrinsic = LidarImuExtrinsic::new(UnitQuaternion::identity(), Vec3::zeros());
         single
@@ -990,6 +1081,12 @@ mod tests {
             state: prior.clone(),
             gravity_basis: fastlio_types::gravity_tangent_basis(&prior.gravity),
             covariance,
+            last_association: AssocGeometryStats::default(),
+            last_iterations: 0,
+            last_assoc_ms: 0.0,
+            last_solve_ms: 0.0,
+            last_assoc_changed: 0,
+            last_assoc_total: 0,
         };
         iterated
             .update(&body_points, &extrinsic, &map, &config_iter)
