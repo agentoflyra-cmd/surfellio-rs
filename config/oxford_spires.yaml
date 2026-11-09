@@ -1,0 +1,50 @@
+common:
+  debug_mode: false
+  lid_topic: /os1_cloud_node/points
+  imu_topic: /os1_cloud_node/imu
+  time_sync_en: false
+  time_offset_lidar_to_imu: 0.0
+preprocess:
+  voxel_size: 0.2
+  lidar_type: 3
+  scan_line: 64
+  blind: 0.5
+mapping:
+  acc_cov: 0.01
+  gyr_cov: 0.01
+  b_acc_cov: 0.0001
+  b_gyr_cov: 0.0001
+  extrinsic_est_en: false
+  extrinsic_T:
+  - -0.0006517086833720833
+  - -0.015510342560109044
+  - 0.08463265780318904
+  extrinsic_R:
+  - -0.016638045748655975
+  - -0.9998601056363506
+  - 0.0017159809243350104
+  - 0.999855257258116
+  - -0.016631813594098047
+  - 0.0035843144224125935
+  - -0.0035552731221621166
+  - 0.0017753685358886202
+  - 0.9999921040186213
+surfel_map_config:
+  voxel_size: 0.4
+  search_radius: 0
+surfel_config:
+  growing_radius: 0.4
+  min_mature_surfel_count: 8
+  max_planarity_ratio: 0.1
+  min_plane_spread_eigenvalue: 0.005
+  association_covariance_eigenvalue_floor: 0.25
+  max_mahalanobis_distance: 2.0
+  growing_association_weight: 0.2
+  merge_enabled: true
+  compaction_interval_frames: 256
+  delete_growing_enabled: false
+  merge_queue_limit: 4096
+  maintenance_max_tasks: 32
+iekf:
+  max_iterations: 10
+  min_delta_norm: 0.001

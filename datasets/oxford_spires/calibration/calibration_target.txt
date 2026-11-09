@@ -1,0 +1,17 @@
+Camera-IMU calibration (Kalibr)
+
+target_type: 'aprilgrid'    #gridtype
+tagCols: 6                  #number of apriltags
+tagRows: 6                  #number of apriltags
+tagSize: 0.088              #size of apriltag, edge to edge [m]
+tagSpacing: 0.3             #ratio of space between tags to tagSize
+
+
+Camera-Lidar calibration (DiffCal)
+
+target_type: 'checkerboard' #gridtype
+targetCols: 12              #number of internal chessboard corners
+targetRows: 9               #number of internal chessboard corners
+rowSpacingMeters: 0.06      #size of one chessboard square [m]
+colSpacingMeters: 0.06      #size of one chessboard square [m]
+

@@ -1,0 +1,31 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/README.md
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/cam-lidar-imu.yaml
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/imu.yaml
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/cam0.yaml
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/cam1.yaml
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/cam2.yaml
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/calibration_target.txt
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/sequences/2024-03-18-christ-church-01/processed/trajectory/hba-tum.txt
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/cam0.yaml
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/cam1.yaml
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/cam2.yaml
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/calibration_target.txt
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/sequences/2024-03-18-christ-church-01/processed/trajectory/hba-tum.txt
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/sequences/2024-03-18-christ-church-01/processed/trajectory/vilens-slam-tum.txt
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/sequences/2024-03-18-christ-church-01/processed/trajectory/colmap-tum.txt
+{"timestamp":"2026-11-09T02:42:22.033668Z","level":"ERROR","fields":{"message":"Error logging to file \"/home/lyra/.cache/huggingface/xet/logs/xet_20261109T104222033+0800_4.log\" (Read-only file system (os error 30)); falling back to console logging."},"filename":"/home/runner/work/xet-core/xet-core/xet_runtime/src/logging/init.rs","line_number":64}
+FAILED sequences/2024-03-18-christ-church-01/raw/imu.csv I/O error: I/O error: Read-only file system (os error 30)
+FAILED sequences/2024-03-18-christ-church-01/raw/lidar-clouds.zip I/O error: I/O error: Read-only file system (os error 30)
+ALL DONE
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/cam0.yaml
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/cam1.yaml
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/cam2.yaml
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/calibration/calibration_target.txt
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/sequences/2024-03-18-christ-church-01/processed/trajectory/hba-tum.txt
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/sequences/2024-03-18-christ-church-01/processed/trajectory/vilens-slam-tum.txt
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/sequences/2024-03-18-christ-church-01/processed/trajectory/colmap-tum.txt
+ok /home/lyra/Projects/fastlio-rs/datasets/oxford_spires/sequences/2024-03-18-christ-church-01/raw/imu.csv
