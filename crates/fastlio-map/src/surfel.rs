@@ -826,14 +826,13 @@ impl SurfelMap {
             let mut best_mature: Option<(SurfelID, f64)> = None;
             let mut best_growing: Option<(SurfelID, f64)> = None;
 
-            let mut seen_roots = HashSet::new();
-
             for candidate_id in candidate_ids {
-                // Stale children resolve to their root; each root is tested once.
+                // Stale children resolve to their root. Duplicate roots are not
+                // de-duplicated: with search_radius == 0 a bucket never yields
+                // two ids with the same root (measured 0 duplicate roots on
+                // corridor_04 and Spires), and even if one appeared it would
+                // only be re-scored, the best root still wins.
                 let (id, _depth) = self.resolve_root(candidate_id);
-                if !seen_roots.insert(id) {
-                    continue;
-                }
                 let Some(s) = self.surfels.get(id) else {
                     continue;
                 };
