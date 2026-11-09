@@ -278,6 +278,12 @@ struct ReplayStats {
     frame_maintenance_ms: Vec<f32>,
     /// Per-frame association geometry (height observability diagnostics).
     assoc_rows: Vec<AssocGeometryRow>,
+    /// IEKF iterations actually run per frame.
+    frame_iekf_iterations: Vec<usize>,
+    /// Per-frame stage timings (ms): predict, deskew, preprocess, iekf, insert.
+    frame_stage_ms: Vec<[f32; 5]>,
+    /// IEKF internal split: association and linear solve (ms).
+    frame_iekf_split_ms: Vec<[f32; 2]>,
 }
 
 #[derive(Clone)]
@@ -432,6 +438,20 @@ fn process_ready_groups(
                 stats
                     .frame_maintenance_ms
                     .push(frame_summary.maintenance_ms);
+                stats
+                    .frame_iekf_iterations
+                    .push(frame_summary.iekf_iterations);
+                stats.frame_iekf_split_ms.push([
+                    frame_summary.iekf_assoc_ms,
+                    frame_summary.iekf_solve_ms,
+                ]);
+                stats.frame_stage_ms.push([
+                    frame_summary.predict_ms,
+                    frame_summary.deskew_ms,
+                    frame_summary.preprocess_ms,
+                    frame_summary.iekf_update_ms,
+                    frame_summary.map_insert_ms,
+                ]);
                 if config.collect_state {
                     let mut covariance_diag = [0.0_f64; 23];
                     for (index, value) in covariance_diag.iter_mut().enumerate() {
@@ -1107,6 +1127,40 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
             "  frame latency: mean={mean:.3} ms p50={p50:.3} p99={p99:.3} max={max:.3} ({} frames)",
             sorted.len()
         );
+        if !stats.frame_stage_ms.is_empty() {
+            let names = ["predict", "deskew", "preprocess", "iekf", "map_insert"];
+            for index in 0..names.len() {
+                let mut values: Vec<f32> = stats.frame_stage_ms.iter().map(|row| row[index]).collect();
+                values.sort_by(|a, b| a.total_cmp(b));
+                let mean = values.iter().map(|&v| v as f64).sum::<f64>() / values.len() as f64;
+                let p99 = values[(values.len() * 99 / 100).min(values.len() - 1)];
+                println!(
+                    "  stage {}: mean={mean:.3} ms p99={p99:.3} ms",
+                    names[index]
+                );
+            }
+            if !stats.frame_iekf_split_ms.is_empty() {
+                for (index, name) in ["assoc", "linear_solve"].iter().enumerate() {
+                    let mut values: Vec<f32> = stats.frame_iekf_split_ms.iter().map(|row| row[index]).collect();
+                    values.sort_by(|a, b| a.total_cmp(b));
+                    let mean = values.iter().map(|&v| v as f64).sum::<f64>() / values.len() as f64;
+                    let p99 = values[(values.len() * 99 / 100).min(values.len() - 1)];
+                    println!("  iekf {name}: mean={mean:.3} ms p99={p99:.3} ms");
+                }
+            }
+            if !stats.frame_iekf_iterations.is_empty() {
+                let mut iters = stats.frame_iekf_iterations.clone();
+                iters.sort_unstable();
+                let mean = iters.iter().sum::<usize>() as f64 / iters.len() as f64;
+                let p50 = iters[iters.len() / 2];
+                let p99 = iters[(iters.len() * 99 / 100).min(iters.len() - 1)];
+                let max = *iters.last().unwrap_or(&0);
+                println!(
+                    "  iekf iterations: mean={mean:.2} p50={p50} p99={p99} max={max} ({} frames)",
+                    iters.len()
+                );
+            }
+        }
         if !stats.frame_maintenance_ms.is_empty() {
             let mut maint = stats.frame_maintenance_ms.clone();
             maint.sort_by(|a, b| a.total_cmp(b));

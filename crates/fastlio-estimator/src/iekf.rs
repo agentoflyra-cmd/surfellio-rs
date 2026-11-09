@@ -137,6 +137,12 @@ pub struct IekfState {
     pub covariance: SMatrix<f64, 23, 23>,
     /// Association geometry of the last update (diagnostic only).
     pub last_association: AssocGeometryStats,
+    /// Number of IEKF iterations actually run by the last update.
+    pub last_iterations: usize,
+    /// Time in association (build_surfel_observation), accumulated over iterations (ms).
+    pub last_assoc_ms: f32,
+    /// Time in linear_update, accumulated over iterations (ms).
+    pub last_solve_ms: f32,
 }
 
 impl Default for IekfState {
@@ -147,6 +153,9 @@ impl Default for IekfState {
             state,
             covariance: SMatrix::<f64, 23, 23>::identity() * 0.1,
             last_association: AssocGeometryStats::default(),
+            last_iterations: 0,
+            last_assoc_ms: 0.0,
+            last_solve_ms: 0.0,
         }
     }
 }
@@ -224,6 +233,9 @@ impl IekfState {
             gravity_basis,
             covariance,
             last_association: AssocGeometryStats::default(),
+            last_iterations: 0,
+            last_assoc_ms: 0.0,
+            last_solve_ms: 0.0,
         })
     }
     pub fn update(
@@ -245,8 +257,13 @@ impl IekfState {
 
         let mut final_error = SVector::zeros();
 
-        for _ in 0..config.max_iterations {
+        let mut iterations = 0usize;
+        let mut assoc_ms = 0.0f32;
+        let mut solve_ms = 0.0f32;
+        for iter in 0..config.max_iterations {
+            iterations = iter + 1;
             assoc_stats = AssocGeometryStats::default();
+            let t_assoc = std::time::Instant::now();
             build_surfel_observation(
                 &state_iter,
                 points,
@@ -256,6 +273,7 @@ impl IekfState {
                 &mut observations,
                 &mut assoc_stats,
             )?;
+            assoc_ms += t_assoc.elapsed().as_secs_f32() * 1000.0;
             let observations_len = observations.len();
 
             if observations_len < config.min_observations {
@@ -265,6 +283,7 @@ impl IekfState {
                 });
             }
 
+            let t_solve = std::time::Instant::now();
             let (error_state, p_work) = crate::optimizer::linear_update(
                 &state_prior,
                 &gravity_basis_prior,
@@ -275,6 +294,7 @@ impl IekfState {
                 config,
             )?;
 
+            solve_ms += t_solve.elapsed().as_secs_f32() * 1000.0;
             (state_iter, gravity_basis_iter) =
                 box_plus(&state_iter, &gravity_basis_iter, &error_state);
             p_final = p_work;
@@ -288,6 +308,9 @@ impl IekfState {
         self.gravity_basis = gravity_basis_iter;
         self.covariance = reset_covariance(&p_final, &final_error);
         self.last_association = assoc_stats;
+        self.last_iterations = iterations;
+        self.last_assoc_ms = assoc_ms;
+        self.last_solve_ms = solve_ms;
         Ok(())
     }
 }

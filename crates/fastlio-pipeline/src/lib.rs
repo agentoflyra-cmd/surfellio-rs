@@ -236,6 +236,16 @@ pub struct PipelineFrameSummary {
     pub wall_observations: usize,
     pub z_information: f64,
     pub horizontal_information: f64,
+    /// IEKF iterations actually run for this frame (0 for bootstrap frames).
+    pub iekf_iterations: usize,
+    /// Wall-clock per-stage timings (ms).
+    pub predict_ms: f32,
+    pub deskew_ms: f32,
+    pub preprocess_ms: f32,
+    pub iekf_update_ms: f32,
+    pub map_insert_ms: f32,
+    pub iekf_assoc_ms: f32,
+    pub iekf_solve_ms: f32,
 }
 
 /// Patch `group_imu` so that its first and last samples coincide with the
@@ -432,6 +442,7 @@ impl MainPipeline {
             return Ok(PipelineFrameSummary::default());
         }
 
+        let t_predict = std::time::Instant::now();
         let previous_state = self.filter.state.clone();
         let mut predict_state = previous_state.clone();
         let segments = build_motion_segments(&group, previous_state, &self.imu_integrator)?;
@@ -454,12 +465,18 @@ impl MainPipeline {
         }
         self.filter.state = predict_state;
         self.filter.covariance = predict_covariance;
+        let predict_ms = t_predict.elapsed().as_secs_f32() * 1000.0;
 
         let frame_time_sec = group.lidar.end_timestamp_sec();
+        let t_deskew = std::time::Instant::now();
         deskew(&mut group.lidar, &segments, &self.extrinsic)?;
+        let deskew_ms = t_deskew.elapsed().as_secs_f32() * 1000.0;
+        let t_pre = std::time::Instant::now();
         let pointcloud = preprocess(&self.config.preprocess, group.lidar)?;
+        let preprocess_ms = t_pre.elapsed().as_secs_f32() * 1000.0;
         self.map.set_time(frame_time_sec);
 
+        let t_iekf = std::time::Instant::now();
         let tracking = if !self.map.is_empty() {
             self.filter
                 .update(
@@ -474,7 +491,9 @@ impl MainPipeline {
             false
         };
 
+        let iekf_update_ms = t_iekf.elapsed().as_secs_f32() * 1000.0;
         let association = self.filter.last_association;
+        let t_insert = std::time::Instant::now();
         let map_points = pointcloud.point_cloud.iter().map(|p| {
             let point_i = self.extrinsic.transform_point(&p.to_vec3_f64());
             let point_w = self.filter.state.orientation * point_i + self.filter.state.position;
@@ -487,6 +506,7 @@ impl MainPipeline {
         });
 
         self.map.insert(map_points)?;
+        let map_insert_ms = t_insert.elapsed().as_secs_f32() * 1000.0;
         // Deferred map maintenance (coplanar merging) runs on a fixed budget so
         // the scan-to-map hot path stays predictable.
         let maintenance = self.map.process_maintenance();
@@ -511,6 +531,14 @@ impl MainPipeline {
             wall_observations: association.wall_observations,
             z_information: association.z_information,
             horizontal_information: association.horizontal_information,
+            iekf_iterations: self.filter.last_iterations,
+            predict_ms,
+            deskew_ms,
+            preprocess_ms,
+            iekf_update_ms,
+            map_insert_ms,
+            iekf_assoc_ms: self.filter.last_assoc_ms,
+            iekf_solve_ms: self.filter.last_solve_ms,
         })
     }
 
