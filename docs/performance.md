@@ -48,8 +48,10 @@ The first IEKF iteration caches the associated `SurfelObservation` for every
 point. Later iterations keep re-linearising (new pose -> new residual and
 Jacobian) but reuse the cached correspondence; a point is re-queried only when
 its plane residual exceeds 0.10 m, and cached misses are always re-queried so
-recall cannot drop. Controlled by `FASTLIO_ASSOC_REUSE` (on by default, `=0`
-disables).
+recall cannot drop. Controlled by `FASTLIO_ASSOC_REUSE` (**opt-in for now**:
+the four-bag regression showed it degrades KA e2e 3.54 -> 4.59 m and
+upstairs/yuanqu z_rmse, so the re-association threshold needs tuning before it
+can be enabled by default).
 
 Measured correspondence-change rate (first vs final iteration, diagnostic mode):
 corridor_04 2.44%, Spires 3.65%.
@@ -65,3 +67,11 @@ corridor_04 2.44%, Spires 3.65%.
 | loop gap (horizontal) | 1.963 m | 1.995 m |
 
 Trajectory difference baseline vs reuse: median 5.1 cm / p90 7.8 cm / max 9.2 cm.
+
+### Regression gate
+
+With `FASTLIO_ASSOC_REUSE` enabled the four-bag check fails on KA.e2e (4.59 vs
+3.54 m), upstairs.ate/z_rmse and yuanqu.ate/z_rmse, so the feature stays opt-in
+until the re-query threshold / iteration interaction is understood. The
+correspondence-reuse code path, diagnostics and timing numbers above remain
+valid for A/B experiments.

@@ -58,6 +58,10 @@ TOLERANCE = {
     'duplicates': 0.15,
     'latency_p99': 0.20,
     'latency_p50': 0.20,
+    'latency_mean': 0.20,
+    'surfels': 0.05,
+    'merged': 0.15,
+    'compacted': 0.15,
 }
 
 
