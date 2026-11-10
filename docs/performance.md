@@ -48,10 +48,17 @@ The first IEKF iteration caches the associated `SurfelObservation` for every
 point. Later iterations keep re-linearising (new pose -> new residual and
 Jacobian) but reuse the cached correspondence; a point is re-queried only when
 its plane residual exceeds 0.10 m, and cached misses are always re-queried so
-recall cannot drop. Controlled by `FASTLIO_ASSOC_REUSE` (**opt-in for now**:
-the four-bag regression showed it degrades KA e2e 3.54 -> 4.59 m and
-upstairs/yuanqu z_rmse, so the re-association threshold needs tuning before it
-can be enabled by default).
+recall cannot drop. Shipped as a **config switch** `iekf.assoc_reuse`
+(default `false`): the four-bag regression showed it degrades KA e2e
+3.54 -> 4.59 m and upstairs/yuanqu z_rmse when enabled, so it stays off until a
+cheap adaptive stability gate exists. Example:
+
+```yaml
+iekf:
+  max_iterations: 10
+  min_delta_norm: 1.0e-3
+  assoc_reuse: false   # real-time switch, see docs/performance.md
+```
 
 Measured correspondence-change rate (first vs final iteration, diagnostic mode):
 corridor_04 2.44%, Spires 3.65%.
@@ -94,8 +101,10 @@ scales with the dataset's overall instability (Spires 3.65% -> works, yuanqu
 
 ### Ground/wall reuse A/B (reuse opt-in, mode selectable)
 
-`FASTLIO_ASSOC_REUSE_MODE=walls|ground` restricts reuse to one category;
-`FASTLIO_REASSOC_M` sets the re-query plane residual (default 0.10 m).
+During these experiments the reuse scope (`walls|ground`) and the re-query
+plane residual (0.05/0.02 m) were selectable through temporary environment
+knobs; the shipped code keeps the fixed 0.10 m threshold and only exposes the
+`iekf.assoc_reuse` switch.
 
 yuanqu (baseline ate 0.1518, z_rmse 0.1143, latency p50 41.7 ms):
 

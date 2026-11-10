@@ -253,6 +253,14 @@ pub struct MappingConfig {
 pub struct IekfTuning {
     pub max_iterations: usize,
     pub min_delta_norm: f64,
+    /// Real-time performance switch: reuse the per-point surfel associations
+    /// cached by the first IEKF iteration in the later iterations (residual and
+    /// Jacobian are still re-linearised at the new pose; a point is re-queried
+    /// when its cached plane residual exceeds 0.10 m). Off by default because
+    /// datasets with a high correspondence-change rate (e.g. yuanqu) degrade in
+    /// accuracy; validated safe on Spires-style data where the change rate is
+    /// low (~3-4%).
+    pub assoc_reuse: bool,
 }
 
 impl Default for IekfTuning {
@@ -260,6 +268,7 @@ impl Default for IekfTuning {
         Self {
             max_iterations: 10,
             min_delta_norm: 1.0e-3,
+            assoc_reuse: false,
         }
     }
 }

@@ -73,3 +73,11 @@ surfel_config:
 iekf:
     max_iterations: 10
     min_delta_norm: 1.0e-3
+    # Real-time performance switch: reuse the surfel associations computed by the
+    # first IEKF iteration in the later iterations (residual/Jacobian are still
+    # recomputed at the new pose; a point is re-queried when its cached plane
+    # residual exceeds 0.10 m). Off by default: safe on data with a low
+    # correspondence-change rate (~3-4%, e.g. Spires; frame time 81 -> 56 ms) but
+    # degrades short indoor bags / long courses where the change rate is high
+    # (yuanqu ~16%, KA e2e 3.54 -> 4.59 m). See docs/performance.md.
+    assoc_reuse: false

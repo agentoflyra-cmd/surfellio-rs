@@ -350,6 +350,7 @@ impl MainPipeline {
         let iekf_config = IekfConfig {
             max_iterations: config.iekf.max_iterations,
             min_delta_norm: config.iekf.min_delta_norm,
+            assoc_reuse: config.iekf.assoc_reuse,
             ..IekfConfig::default()
         };
         Self {

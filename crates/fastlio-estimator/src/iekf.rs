@@ -287,11 +287,8 @@ impl IekfState {
         } else {
             None
         };
-        // Opt-in for now: the four-bag regression shows that reusing
-        // correspondences degrades some datasets (KA e2e 3.54 -> 4.59 m,
-        // upstairs/yuanqu z_rmse), so further threshold tuning is needed before
-        // enabling it by default.
-        let assoc_reuse = std::env::var("FASTLIO_ASSOC_REUSE").is_ok();
+        // Config switch (off by default; see IekfTuning::assoc_reuse).
+        let assoc_reuse = config.assoc_reuse;
         let mut assoc_cache: Vec<Option<SurfelObservation>> = Vec::new();
         let mut iterations = 0usize;
         let mut assoc_ms = 0.0f32;

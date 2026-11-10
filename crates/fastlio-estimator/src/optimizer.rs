@@ -34,6 +34,8 @@ pub struct SurfelLinearizedObservation {
 pub struct IekfConfig {
     pub max_iterations: usize,
     pub min_delta_norm: f64,
+    /// Reuse per-point associations across iterations (see IekfTuning docs).
+    pub assoc_reuse: bool,
     pub damping: f64,
     /// Geometry-independent association covariance in the LiDAR frame `L`,
     /// expressed in square meters.
@@ -49,6 +51,7 @@ impl Default for IekfConfig {
         Self {
             max_iterations: 10,
             min_delta_norm: 1.0e-6,
+            assoc_reuse: false,
             damping: 1.0e-6,
             association_point_covariance_l: Mat3::identity() * 0.03_f64.powi(2),
             measurement_point_covariance_l: Mat3::identity() * 0.03_f64.powi(2),
@@ -73,14 +76,6 @@ pub(crate) fn build_surfel_observation(
         point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
     let measurement_point_covariance_w =
         point_covariance_w(state, extrinsic, &config.measurement_point_covariance_l);
-    // Reuse scope: all correspondences (default), only wall-like surfels, or
-    // only ground-like surfels (|nz| threshold, same split as the observation
-    // statistics). Ground/wall A/B experiments use FASTLIO_ASSOC_REUSE_MODE.
-    let reuse_mode = std::env::var("FASTLIO_ASSOC_REUSE_MODE").unwrap_or_default();
-    let reassoc_plane_residual_m: f64 = std::env::var("FASTLIO_REASSOC_M")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(REASSOC_PLANE_RESIDUAL_M);
     if let Some(c) = cache.as_deref_mut()
         && c.len() != points.len()
     {
@@ -118,14 +113,6 @@ pub(crate) fn build_surfel_observation(
             cache
                 .as_deref_mut()
                 .and_then(|c| c.get_mut(index).and_then(|slot| slot.take()))
-                .filter(|obs| {
-                    let nz = obs.eigenvectors.column(0).z.abs();
-                    match reuse_mode.as_str() {
-                        "walls" => nz <= 0.8,
-                        "ground" => nz > 0.8,
-                        _ => true,
-                    }
-                })
         } else {
             None
         };
@@ -133,7 +120,7 @@ pub(crate) fn build_surfel_observation(
             Some(obs) => {
                 let normal = obs.eigenvectors.column(0);
                 let plane_residual = (point_w_vec - obs.mean_w).dot(&normal);
-                if plane_residual.abs() > reassoc_plane_residual_m {
+                if plane_residual.abs() > REASSOC_PLANE_RESIDUAL_M {
                     query(map)?
                 } else {
                     Some(obs)
@@ -1117,6 +1104,10 @@ mod tests {
             last_solve_ms: 0.0,
             last_assoc_changed: 0,
             last_assoc_total: 0,
+            last_assoc_changed_ground: 0,
+            last_assoc_total_ground: 0,
+            last_assoc_changed_wall: 0,
+            last_assoc_total_wall: 0,
         };
         let extrinsic = LidarImuExtrinsic::new(UnitQuaternion::identity(), Vec3::zeros());
         single
@@ -1137,6 +1128,10 @@ mod tests {
             last_solve_ms: 0.0,
             last_assoc_changed: 0,
             last_assoc_total: 0,
+            last_assoc_changed_ground: 0,
+            last_assoc_total_ground: 0,
+            last_assoc_changed_wall: 0,
+            last_assoc_total_wall: 0,
         };
         iterated
             .update(&body_points, &extrinsic, &map, &config_iter)
