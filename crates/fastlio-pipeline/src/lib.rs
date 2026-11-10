@@ -248,6 +248,10 @@ pub struct PipelineFrameSummary {
     pub iekf_solve_ms: f32,
     pub assoc_changed: usize,
     pub assoc_total: usize,
+    pub assoc_changed_ground: usize,
+    pub assoc_total_ground: usize,
+    pub assoc_changed_wall: usize,
+    pub assoc_total_wall: usize,
 }
 
 /// Patch `group_imu` so that its first and last samples coincide with the
@@ -543,6 +547,10 @@ impl MainPipeline {
             iekf_solve_ms: self.filter.last_solve_ms,
             assoc_changed: self.filter.last_assoc_changed,
             assoc_total: self.filter.last_assoc_total,
+            assoc_changed_ground: self.filter.last_assoc_changed_ground,
+            assoc_total_ground: self.filter.last_assoc_total_ground,
+            assoc_changed_wall: self.filter.last_assoc_changed_wall,
+            assoc_total_wall: self.filter.last_assoc_total_wall,
         })
     }
 

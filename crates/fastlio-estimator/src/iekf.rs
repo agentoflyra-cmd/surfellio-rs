@@ -148,6 +148,11 @@ pub struct IekfState {
     pub last_assoc_changed: usize,
     /// Diagnostic: total points considered for the correspondence check.
     pub last_assoc_total: usize,
+    /// Diagnostic: correspondence changes split by ground/wall category.
+    pub last_assoc_changed_ground: usize,
+    pub last_assoc_total_ground: usize,
+    pub last_assoc_changed_wall: usize,
+    pub last_assoc_total_wall: usize,
 }
 
 impl Default for IekfState {
@@ -163,6 +168,10 @@ impl Default for IekfState {
             last_solve_ms: 0.0,
             last_assoc_changed: 0,
             last_assoc_total: 0,
+            last_assoc_changed_ground: 0,
+            last_assoc_total_ground: 0,
+            last_assoc_changed_wall: 0,
+            last_assoc_total_wall: 0,
         }
     }
 }
@@ -245,6 +254,10 @@ impl IekfState {
             last_solve_ms: 0.0,
             last_assoc_changed: 0,
             last_assoc_total: 0,
+            last_assoc_changed_ground: 0,
+            last_assoc_total_ground: 0,
+            last_assoc_changed_wall: 0,
+            last_assoc_total_wall: 0,
         })
     }
     pub fn update(
@@ -340,9 +353,37 @@ impl IekfState {
                 .zip(after.iter())
                 .filter(|(a, b)| a != b)
                 .count();
+            // Category split uses the id's surfel normal at query time.
+            self.last_assoc_total_ground = 0;
+            self.last_assoc_total_wall = 0;
+            self.last_assoc_changed_ground = 0;
+            self.last_assoc_changed_wall = 0;
+            let categories = crate::optimizer::associate_categories(
+                &state_iter, points, map, extrinsic, config,
+            )?;
+            for (index, (a, b)) in before.iter().zip(after.iter()).enumerate() {
+                let Some((is_ground, _)) = categories.get(index).copied().flatten() else {
+                    continue;
+                };
+                if is_ground {
+                    self.last_assoc_total_ground += 1;
+                    if a != b {
+                        self.last_assoc_changed_ground += 1;
+                    }
+                } else {
+                    self.last_assoc_total_wall += 1;
+                    if a != b {
+                        self.last_assoc_changed_wall += 1;
+                    }
+                }
+            }
         } else {
             self.last_assoc_total = 0;
             self.last_assoc_changed = 0;
+            self.last_assoc_total_ground = 0;
+            self.last_assoc_total_wall = 0;
+            self.last_assoc_changed_ground = 0;
+            self.last_assoc_changed_wall = 0;
         }
         self.state = state_iter;
         self.gravity_basis = gravity_basis_iter;

@@ -75,3 +75,40 @@ With `FASTLIO_ASSOC_REUSE` enabled the four-bag check fails on KA.e2e (4.59 vs
 until the re-query threshold / iteration interaction is understood. The
 correspondence-reuse code path, diagnostics and timing numbers above remain
 valid for A/B experiments.
+
+### Correspondence stability is dataset-dependent
+
+Change rate of the per-point association between the first and the final IEKF
+iteration (`FASTLIO_ASSOC_CHANGE_DIAG`):
+
+| dataset | overall | ground | wall |
+|---|---:|---:|---:|
+| corridor_04 | 2.44% | — | — |
+| Spires christ-church-01 | 3.65% | — | — |
+| upstairs | 6.62% | 5.74% | 6.97% |
+| yuanqu | **16.02%** | 14.17% | 17.80% |
+
+Ground correspondences are not less stable than wall ones; the whole reuse risk
+scales with the dataset's overall instability (Spires 3.65% -> works, yuanqu
+16% -> does not).
+
+### Ground/wall reuse A/B (reuse opt-in, mode selectable)
+
+`FASTLIO_ASSOC_REUSE_MODE=walls|ground` restricts reuse to one category;
+`FASTLIO_REASSOC_M` sets the re-query plane residual (default 0.10 m).
+
+yuanqu (baseline ate 0.1518, z_rmse 0.1143, latency p50 41.7 ms):
+
+| mode | ate | z_rmse | latency p50 |
+|---|---:|---:|---:|
+| walls, 0.10 m | 0.1520 | 0.1348 (+18%) | 23.6 ms |
+| ground, 0.10 m | 0.1549 | 0.1230 (+7.6%) | 29.5 ms |
+| ground, 0.05 m | 0.1567 | 0.1263 (+10.5%) | 31.9 ms |
+| ground, 0.02 m | 0.1602 | 0.1276 (+11.6%) | 36.4 ms |
+
+upstairs ground/0.05: ate 0.0916 (+11.7% vs 0.0820), z_rmse 0.0488 (+70%).
+
+Conclusion: neither category nor a tighter re-query threshold removes the
+degradation on the short indoor bags; reuse stays opt-in and is only known-safe
+where the measured correspondence change rate is low (Spires). A future adaptive
+gate would have to estimate stability cheaply (e.g. iteration pose delta).

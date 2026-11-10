@@ -73,6 +73,14 @@ pub(crate) fn build_surfel_observation(
         point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
     let measurement_point_covariance_w =
         point_covariance_w(state, extrinsic, &config.measurement_point_covariance_l);
+    // Reuse scope: all correspondences (default), only wall-like surfels, or
+    // only ground-like surfels (|nz| threshold, same split as the observation
+    // statistics). Ground/wall A/B experiments use FASTLIO_ASSOC_REUSE_MODE.
+    let reuse_mode = std::env::var("FASTLIO_ASSOC_REUSE_MODE").unwrap_or_default();
+    let reassoc_plane_residual_m: f64 = std::env::var("FASTLIO_REASSOC_M")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(REASSOC_PLANE_RESIDUAL_M);
     if let Some(c) = cache.as_deref_mut()
         && c.len() != points.len()
     {
@@ -110,6 +118,14 @@ pub(crate) fn build_surfel_observation(
             cache
                 .as_deref_mut()
                 .and_then(|c| c.get_mut(index).and_then(|slot| slot.take()))
+                .filter(|obs| {
+                    let nz = obs.eigenvectors.column(0).z.abs();
+                    match reuse_mode.as_str() {
+                        "walls" => nz <= 0.8,
+                        "ground" => nz > 0.8,
+                        _ => true,
+                    }
+                })
         } else {
             None
         };
@@ -117,7 +133,7 @@ pub(crate) fn build_surfel_observation(
             Some(obs) => {
                 let normal = obs.eigenvectors.column(0);
                 let plane_residual = (point_w_vec - obs.mean_w).dot(&normal);
-                if plane_residual.abs() > REASSOC_PLANE_RESIDUAL_M {
+                if plane_residual.abs() > reassoc_plane_residual_m {
                     query(map)?
                 } else {
                     Some(obs)
@@ -195,6 +211,40 @@ pub(crate) fn associate_surfel_ids(
         ids.push(observation.map(|obs| obs.surfel_id));
     }
     Ok(ids)
+}
+
+/// Diagnostic only: per-point associated surfel category (ground vs wall) at
+/// the given state, used for the correspondence-change split.
+pub(crate) fn associate_categories(
+    state: &NavState,
+    points: &[PointXYZI],
+    map: &SurfelMap,
+    extrinsic: &LidarImuExtrinsic,
+    config: &IekfConfig,
+) -> Result<Vec<Option<(bool, fastlio_map::surfel::SurfelID)>>, IekfUpdateError> {
+    let covariance_w =
+        point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
+    let mut out = Vec::with_capacity(points.len());
+    for point in points {
+        let point_i = extrinsic.transform_point(&point.to_vec3_f64());
+        let point_w_vec = transform_point(state, &point_i);
+        let point_w = PointXYZI {
+            x: point_w_vec.x as f32,
+            y: point_w_vec.y as f32,
+            z: point_w_vec.z as f32,
+            intensity: point.intensity,
+        };
+        let observation = map
+            .query_surfel(&point_w, covariance_w)
+            .map_err(|e| IekfUpdateError::MapQueryFailed {
+                context: e.to_string(),
+            })?;
+        out.push(observation.map(|obs| {
+            let is_ground = obs.eigenvectors.column(0).z.abs() > 0.8;
+            (is_ground, obs.surfel_id)
+        }));
+    }
+    Ok(out)
 }
 
 /// Whiten one associated surfel residual using its full measurement covariance.

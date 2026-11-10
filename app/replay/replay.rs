@@ -287,6 +287,10 @@ struct ReplayStats {
     /// Diagnostic: correspondence changes between first/final IEKF iteration.
     assoc_changed: usize,
     assoc_total: usize,
+    assoc_changed_ground: usize,
+    assoc_total_ground: usize,
+    assoc_changed_wall: usize,
+    assoc_total_wall: usize,
 }
 
 #[derive(Clone)]
@@ -446,6 +450,10 @@ fn process_ready_groups(
                     .push(frame_summary.iekf_iterations);
                 stats.assoc_changed += frame_summary.assoc_changed;
                 stats.assoc_total += frame_summary.assoc_total;
+                stats.assoc_changed_ground += frame_summary.assoc_changed_ground;
+                stats.assoc_total_ground += frame_summary.assoc_total_ground;
+                stats.assoc_changed_wall += frame_summary.assoc_changed_wall;
+                stats.assoc_total_wall += frame_summary.assoc_total_wall;
                 stats.frame_iekf_split_ms.push([
                     frame_summary.iekf_assoc_ms,
                     frame_summary.iekf_solve_ms,
@@ -1159,6 +1167,22 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
                     "  assoc change diag: changed={} total={} frac={frac:.4}",
                     stats.assoc_changed, stats.assoc_total
                 );
+                if stats.assoc_total_ground > 0 {
+                    println!(
+                        "  assoc change diag ground: changed={} total={} frac={:.4}",
+                        stats.assoc_changed_ground,
+                        stats.assoc_total_ground,
+                        stats.assoc_changed_ground as f64 / stats.assoc_total_ground as f64
+                    );
+                }
+                if stats.assoc_total_wall > 0 {
+                    println!(
+                        "  assoc change diag wall: changed={} total={} frac={:.4}",
+                        stats.assoc_changed_wall,
+                        stats.assoc_total_wall,
+                        stats.assoc_changed_wall as f64 / stats.assoc_total_wall as f64
+                    );
+                }
             }
             if !stats.frame_iekf_iterations.is_empty() {
                 let mut iters = stats.frame_iekf_iterations.clone();
