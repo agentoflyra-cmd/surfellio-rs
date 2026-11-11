@@ -15,8 +15,10 @@ pub mod candidates;
 pub mod icp;
 pub mod keyframe;
 pub mod pose_graph;
+pub mod refusion;
 pub mod scan_context;
 pub mod submap;
+pub mod warp;
 
 pub use candidates::{CandidateParams, LoopCandidate, propose_candidates};
 pub use keyframe::{Keyframe, load_keyframes};
