@@ -1,0 +1,9 @@
+[package]
+name = "fastlio-loop"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+fastlio-types = { path = "../fastlio-types" }
+anyhow = { workspace = true }
+nalgebra = { workspace = true }

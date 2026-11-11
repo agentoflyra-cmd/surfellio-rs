@@ -986,6 +986,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastlio-loop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fastlio-types",
+ "nalgebra",
+]
+
+[[package]]
 name = "fastlio-map"
 version = "0.1.0"
 dependencies = [
