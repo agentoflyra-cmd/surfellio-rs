@@ -232,3 +232,47 @@ python3 scripts/spires_refusion.py --render
 并重跑 0.1/0.2/0.4 m 偏置，位姿误差同样完全没有改善（20.1→20.1 / 40.2→40.2 /
 80.3→80.3 mm）。因此结论与平面过滤无关，而是最近邻点到面锚点在这种对称场景下
 对全局平移不可观测（或对应不可靠）。变形图在当前数据/形式下不可行，暂不继续投入。
+
+## 10. Rust 移植（fastlio-loop）
+
+已把验证过的 LiDAR-only 链路移植为独立 crate `crates/fastlio-loop`，分五个阶段提交：
+
+| 阶段 | 模块 | 验证结果 |
+|---|---|---|
+| 1 | `keyframe` + `scan_context` + `candidates` | 与 Python 候选 **76/76 完全一致**，描述子距离逐对相同 |
+| 2 | `submap` + `icp` | 接受 **28/28** 条测量；平移差 mean 0.055 m、角度差 0.17° |
+| 3 | `pose_graph`（LM + Cauchy + GNC） | 关键帧位姿与 GTSAM 差 0.106 m mean / 0.145°；全轨迹 ATE **0.129 / 0.128 / 0.138 m** |
+| 4 | `warp` + `refusion` | warp 与 Python 差 ≤2e-5 m；同输入下重融合点云与 Python 完全一致（0.0 mm） |
+| 5 | `loop_closure` 端到端 CLI | closure 2.384→2.028 m，ATE 0.129/0.129/0.138 m |
+
+端到端运行：
+
+```bash
+cargo run --release -p fastlio-loop --bin loop_closure -- \
+  --keyframes output/spires/keyframes \
+  --trajectory output/spires/trajectory.csv \
+  --out-dir output/spires/loop_cli
+```
+
+输出：`measurements.txt`、`poses.txt`、`warped_trajectory.csv`、`refusion/map.pcd`、
+`refusion/surfels.csv`。
+
+### 移植中的关键差异与处理
+
+1. **位姿图不能直接用 Python 的 Cauchy 参数**：GTSAM 的 Cauchy k 是白化残差单位；
+   Rust 求解器需要 **GNC 调度**（k = 1.0 → 0.4 → 0.15 → 0.08）才能从漂移初值
+   收敛到好解；直接优化会落入局部极小（ATE 0.180 vs GNC 后 0.129）。
+2. **ICP 目标法向**必须用局部 PCA（仿 Open3D `estimate_normals`），用 voxel 平面
+   法向时测量误差 0.38 m；改用稠密目标点云 + 局部 PCA 后误差降到 0.055 m。
+3. **fitness 基准是目标点云**（Open3D 口径），不是平面中心集合，否则 fitness 系统性偏低
+   导致所有候选被拒。
+4. 重融合使用逐 voxel 的 count/sum/outer-product 累加统计，无需保留全部点即可
+   拟合平面（Rust 端 4M 点约 0.3 s）。
+
+### 与 Python 结果的差异来源
+
+- 阶段 2 测量差异（0.055 m）和阶段 3 位姿差异（0.106 m）来自 Rust ICP/求解器与
+  Open3D/GTSAM 的数值差异，属可接受范围；
+- 重融合层残差：Rust 位姿下 52.2/33.3/139.6 → **25.4/17.6/58.4 mm**；
+  用 Python 位姿为 20.3/16.4/39.8 mm，差异来自位姿图解而非重融合实现
+  （同输入下两者点云 0.0 mm 一致）。
