@@ -93,12 +93,25 @@ python3 scripts/spires_refusion.py
 - 候选 76 对 → 接受 28 条回环边（48 条被过滤）；
 - 首尾闭合：2.384 m → 1.913 m（参考轨迹自身首尾差约 2.3 m）。
 
-### 4.2 地图重融合（回访区 voxel 层残差）
+### 4.2 地图重融合（简单方案，当前主线）
 
-| 版本 | mean | median | p90 | voxels |
-|---|---:|---:|---:|---:|
-| 漂移 | 52.2 mm | 33.3 mm | 139.0 mm | 1279 |
-| 重融合（修正位姿） | **20.3 mm** | **16.4 mm** | **39.8 mm** | 2338 |
+重融合的做法：把每个关键帧的原始点云用修正变换 `dT_k = T'_k T_k^-1` 整体变换，
+再以 0.25 m voxel 重新分桶、每个 voxel 用协方差特征分解重拟合平面（中心 + 法向），
+得到新地图；不需要对旧 surfel 做任何变形。
+
+```bash
+python3 scripts/spires_refusion.py --render
+```
+
+输出：`output/spires/refusion/surfels.npz`（centers/normals/eigenvalues/counts）、
+`map.pcd`（与 fastlio-replay 相同的 surfel PCD 布局）、`map.png`。
+
+| 指标 | 数值 |
+|---|---|
+| 重融合 surfel 数（0.25 m） | 170,126 |
+| 平均每 voxel 点数 | 24.2 |
+| 漂移地图回访层残差 | mean 52.2 / median 33.3 / p90 139.0 mm |
+| 重融合地图回访层残差 | **mean 20.3 / median 16.4 / p90 39.8 mm** |
 
 ### 4.3 消融结论
 
