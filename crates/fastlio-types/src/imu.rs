@@ -17,6 +17,7 @@ pub struct ImuSample {
 /// in this project, use T_BA means from B to A, T_AB means from A to B.
 /// Pose3 T_BA: from B to A, as fastlio source code
 /// Rotation_BA * Point_B + Translation
+#[derive(Debug, Clone)]
 pub struct Pose3 {
     pub rotation: UnitQuaternion<f64>,
     pub translation: Vec3<f64>,

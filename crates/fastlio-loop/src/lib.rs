@@ -14,6 +14,7 @@
 pub mod candidates;
 pub mod icp;
 pub mod keyframe;
+pub mod pose_graph;
 pub mod scan_context;
 pub mod submap;
 
