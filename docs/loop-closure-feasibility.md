@@ -341,3 +341,19 @@ RMS 0.085、闭环误差 0.12 m）重新放置各关键帧点云，与漂移版�
 约束），LM 反而把地图拉坏；锚点权重/匹配阈值加大后更差。结论：完整变形图需要
 可靠的 surfel 对应（可见性/法向一致性/robust kernel），否则不如直接的
 "修正位姿重融合"。该分支保留为实验记录，暂不进入主线。
+
+### Oxford Spires：LiDAR-only 闭环验证（成功）
+
+在 Oxford Spires `2024-03-18-christ-church-01`（795 s、含真实回访）上验证了完整
+LiDAR-only 闭环：Scan Context 候选 + 局部 ICP + 物理过滤 + GTSAM 位姿图 + 地图重融合。
+
+- 轨迹 ATE（全轨迹对齐）：0.511 → **0.124 m**（hba），0.504 → 0.133 m（vilens），
+  0.518 → 0.138 m（colmap）；首尾闭合 2.384 → 1.913 m；
+- 回访区地图层残差：52.2 → **20.3 mm**（mean），p90 139 → 39.8 mm；
+- 消融：FPFH+RANSAC 与局部 ICP 结果一致（不必要）；参考轨迹提候选与 Scan Context
+  提候选结果一致（0.122 vs 0.124 m）；
+- 变形图：实现与重融合等价（median 0.2 mm），但从漂移初值无法收敛（锚点收敛域问题）；
+  有原始点云时重融合更优。
+
+详细方法与参数见 `docs/spires-loop-closure.md`，脚本为
+`scripts/spires_loop_pipeline.py` / `scripts/spires_refusion.py`。
