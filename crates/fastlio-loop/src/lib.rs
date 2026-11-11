@@ -12,8 +12,10 @@
 //! world pose at the keyframe timestamp.
 
 pub mod candidates;
+pub mod icp;
 pub mod keyframe;
 pub mod scan_context;
+pub mod submap;
 
 pub use candidates::{CandidateParams, LoopCandidate, propose_candidates};
 pub use keyframe::{Keyframe, load_keyframes};
