@@ -1,4 +1,4 @@
-use fastlio_dataset::{read_mcap_events_on_topics, SensorEvent};
+use fastlio_dataset::{SensorEvent, read_mcap_events_on_topics};
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -11,7 +11,14 @@ fn main() -> anyhow::Result<()> {
         match ev {
             SensorEvent::Lidar(f) => {
                 if lidar < 5 {
-                    println!("lidar base={:.6} end={:.6} npts={} off0={:?} off1={:?}", f.base_timestamp_sec, f.end_timestamp_sec(), f.points.len(), f.points.get(0).map(|p| p.offset_time_sec), f.points.get(1).map(|p| p.offset_time_sec));
+                    println!(
+                        "lidar base={:.6} end={:.6} npts={} off0={:?} off1={:?}",
+                        f.base_timestamp_sec,
+                        f.end_timestamp_sec(),
+                        f.points.len(),
+                        f.points.get(0).map(|p| p.offset_time_sec),
+                        f.points.get(1).map(|p| p.offset_time_sec)
+                    );
                 }
                 lidar += 1;
             }
@@ -22,7 +29,9 @@ fn main() -> anyhow::Result<()> {
                 imu += 1;
             }
         }
-        if lidar + imu > 15 { std::process::exit(0); }
+        if lidar + imu > 15 {
+            std::process::exit(0);
+        }
         Ok(())
     })?;
     Ok(())

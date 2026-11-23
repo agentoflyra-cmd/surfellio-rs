@@ -178,8 +178,7 @@ pub(crate) fn associate_surfel_ids(
     extrinsic: &LidarImuExtrinsic,
     config: &IekfConfig,
 ) -> Result<Vec<Option<fastlio_map::surfel::SurfelID>>, IekfUpdateError> {
-    let covariance_w =
-        point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
+    let covariance_w = point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
     let mut ids = Vec::with_capacity(points.len());
     for point in points {
         let point_i = extrinsic.transform_point(&point.to_vec3_f64());
@@ -190,11 +189,11 @@ pub(crate) fn associate_surfel_ids(
             z: point_w_vec.z as f32,
             intensity: point.intensity,
         };
-        let observation = map
-            .query_surfel(&point_w, covariance_w)
-            .map_err(|e| IekfUpdateError::MapQueryFailed {
+        let observation = map.query_surfel(&point_w, covariance_w).map_err(|e| {
+            IekfUpdateError::MapQueryFailed {
                 context: e.to_string(),
-            })?;
+            }
+        })?;
         ids.push(observation.map(|obs| obs.surfel_id));
     }
     Ok(ids)
@@ -209,8 +208,7 @@ pub(crate) fn associate_categories(
     extrinsic: &LidarImuExtrinsic,
     config: &IekfConfig,
 ) -> Result<Vec<Option<(bool, fastlio_map::surfel::SurfelID)>>, IekfUpdateError> {
-    let covariance_w =
-        point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
+    let covariance_w = point_covariance_w(state, extrinsic, &config.association_point_covariance_l);
     let mut out = Vec::with_capacity(points.len());
     for point in points {
         let point_i = extrinsic.transform_point(&point.to_vec3_f64());
@@ -221,11 +219,11 @@ pub(crate) fn associate_categories(
             z: point_w_vec.z as f32,
             intensity: point.intensity,
         };
-        let observation = map
-            .query_surfel(&point_w, covariance_w)
-            .map_err(|e| IekfUpdateError::MapQueryFailed {
+        let observation = map.query_surfel(&point_w, covariance_w).map_err(|e| {
+            IekfUpdateError::MapQueryFailed {
                 context: e.to_string(),
-            })?;
+            }
+        })?;
         out.push(observation.map(|obs| {
             let is_ground = obs.eigenvectors.column(0).z.abs() > 0.8;
             (is_ground, obs.surfel_id)

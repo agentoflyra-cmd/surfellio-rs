@@ -631,7 +631,7 @@ impl<'a> CdrDecoder<'a> {
         }
 
         let mut utf16_units = Vec::with_capacity(bytes.len() / 2);
-        for chunk in bytes.chunks_exact(2) {
+        for chunk in bytes.as_chunks::<2>().0 {
             let unit = match self.endianness {
                 Endianness::Big => u16::from_be_bytes([chunk[0], chunk[1]]),
                 Endianness::Little => u16::from_le_bytes([chunk[0], chunk[1]]),

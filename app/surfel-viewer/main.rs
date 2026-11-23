@@ -341,11 +341,11 @@ fn read_surfels(path: &str) -> Result<Vec<SurfelPoint>> {
                     z: get(z)?,
                 },
                 normal: Vec3 {
-                    x: nx.map(&get).transpose()?.unwrap_or(0.0),
-                    y: ny.map(&get).transpose()?.unwrap_or(0.0),
-                    z: nz.map(&get).transpose()?.unwrap_or(1.0),
+                    x: nx.map(get).transpose()?.unwrap_or(0.0),
+                    y: ny.map(get).transpose()?.unwrap_or(0.0),
+                    z: nz.map(get).transpose()?.unwrap_or(1.0),
                 },
-                count: count.map(&get).transpose()?.unwrap_or(1.0),
+                count: count.map(get).transpose()?.unwrap_or(1.0),
                 class_id: class.map(get).transpose()?.unwrap_or(0.0),
             })
         })

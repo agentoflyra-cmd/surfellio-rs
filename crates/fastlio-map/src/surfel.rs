@@ -684,7 +684,7 @@ impl SurfelMap {
             counters.no_candidate += 1;
         }
         // Sampled wide probe: every 64th failed query, at most 4 per frame.
-        if index % 64 != 0 || self.diag_frame_probes.get() >= 4 {
+        if !index.is_multiple_of(64) || self.diag_frame_probes.get() >= 4 {
             return;
         }
         self.diag_frame_probes.set(self.diag_frame_probes.get() + 1);
@@ -742,9 +742,8 @@ impl SurfelMap {
             sampled += 1;
             duplicates += self.count_coplanar_neighbours(id, surfel);
         }
-        if sampled > 0 {
-            stats.coplanar_duplicate_pairs = duplicates * stats.total / sampled;
-        }
+        stats.coplanar_duplicate_pairs =
+            (duplicates * stats.total).checked_div(sampled).unwrap_or(0);
         stats
     }
 
@@ -1267,7 +1266,9 @@ impl SurfelMap {
         let mut compacted = 0usize;
         if self.surfel_config.merge_enabled
             && self.surfel_config.compaction_interval_frames > 0
-            && (self.frame_counter % self.surfel_config.compaction_interval_frames as u64) == 0
+            && self
+                .frame_counter
+                .is_multiple_of(self.surfel_config.compaction_interval_frames as u64)
         {
             compacted = self.compact_tombstones();
             self.compacted_total += compacted;

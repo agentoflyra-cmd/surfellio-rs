@@ -282,7 +282,11 @@ impl IekfState {
         let assoc_change_diag = std::env::var("FASTLIO_ASSOC_CHANGE_DIAG").is_ok();
         let ids_before = if assoc_change_diag {
             Some(crate::optimizer::associate_surfel_ids(
-                &state_prior, points, map, extrinsic, config,
+                &state_prior,
+                points,
+                map,
+                extrinsic,
+                config,
             )?)
         } else {
             None
@@ -306,7 +310,11 @@ impl IekfState {
                 config,
                 &mut observations,
                 &mut assoc_stats,
-                if assoc_reuse { Some(&mut assoc_cache) } else { None },
+                if assoc_reuse {
+                    Some(&mut assoc_cache)
+                } else {
+                    None
+                },
                 reuse,
             )?;
             assoc_ms += t_assoc.elapsed().as_secs_f32() * 1000.0;
@@ -342,7 +350,11 @@ impl IekfState {
 
         if let Some(before) = ids_before {
             let after = crate::optimizer::associate_surfel_ids(
-                &state_iter, points, map, extrinsic, config,
+                &state_iter,
+                points,
+                map,
+                extrinsic,
+                config,
             )?;
             self.last_assoc_total = before.len();
             self.last_assoc_changed = before
@@ -356,7 +368,11 @@ impl IekfState {
             self.last_assoc_changed_ground = 0;
             self.last_assoc_changed_wall = 0;
             let categories = crate::optimizer::associate_categories(
-                &state_iter, points, map, extrinsic, config,
+                &state_iter,
+                points,
+                map,
+                extrinsic,
+                config,
             )?;
             for (index, (a, b)) in before.iter().zip(after.iter()).enumerate() {
                 let Some((is_ground, _)) = categories.get(index).copied().flatten() else {

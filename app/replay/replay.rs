@@ -454,10 +454,9 @@ fn process_ready_groups(
                 stats.assoc_total_ground += frame_summary.assoc_total_ground;
                 stats.assoc_changed_wall += frame_summary.assoc_changed_wall;
                 stats.assoc_total_wall += frame_summary.assoc_total_wall;
-                stats.frame_iekf_split_ms.push([
-                    frame_summary.iekf_assoc_ms,
-                    frame_summary.iekf_solve_ms,
-                ]);
+                stats
+                    .frame_iekf_split_ms
+                    .push([frame_summary.iekf_assoc_ms, frame_summary.iekf_solve_ms]);
                 stats.frame_stage_ms.push([
                     frame_summary.predict_ms,
                     frame_summary.deskew_ms,
@@ -1143,7 +1142,8 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
         if !stats.frame_stage_ms.is_empty() {
             let names = ["predict", "deskew", "preprocess", "iekf", "map_insert"];
             for index in 0..names.len() {
-                let mut values: Vec<f32> = stats.frame_stage_ms.iter().map(|row| row[index]).collect();
+                let mut values: Vec<f32> =
+                    stats.frame_stage_ms.iter().map(|row| row[index]).collect();
                 values.sort_by(|a, b| a.total_cmp(b));
                 let mean = values.iter().map(|&v| v as f64).sum::<f64>() / values.len() as f64;
                 let p99 = values[(values.len() * 99 / 100).min(values.len() - 1)];
@@ -1154,7 +1154,11 @@ fn print_map_stats(map: &SurfelMap, stats: &ReplayStats) {
             }
             if !stats.frame_iekf_split_ms.is_empty() {
                 for (index, name) in ["assoc", "linear_solve"].iter().enumerate() {
-                    let mut values: Vec<f32> = stats.frame_iekf_split_ms.iter().map(|row| row[index]).collect();
+                    let mut values: Vec<f32> = stats
+                        .frame_iekf_split_ms
+                        .iter()
+                        .map(|row| row[index])
+                        .collect();
                     values.sort_by(|a, b| a.total_cmp(b));
                     let mean = values.iter().map(|&v| v as f64).sum::<f64>() / values.len() as f64;
                     let p99 = values[(values.len() * 99 / 100).min(values.len() - 1)];
